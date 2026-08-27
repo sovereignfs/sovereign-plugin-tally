@@ -470,17 +470,70 @@ doesn't linger in back-history) — necessary since the just-deleted group's
 
 `pnpm typecheck`/`eslint`/`prettier --check` (scoped to this task's touched
 files, same rationale as the previous entry)/`pnpm design:tokens:check`/
-`pnpm test` (36 tests) all clean. **Not live-tested this session** — the
-same preview-server environment issue as the previous entry recurred
-identically on a fresh attempt (`preview_start` reported success, `autoPort`
-assigned a free port, but nothing ever bound it, reconfirmed via `lsof`
-after a 20s wait) and was not re-investigated further as a now-recurring,
-already-diagnosed environment issue rather than a new one. Shipped without
-live verification per the same prior developer decision. The Close/Delete
-buttons' visibility toggle (`hasHistory`), the disabled+tooltip state
-(`hasOutstandingBalance`), the `ConfirmDialog` wiring, and the post-delete
-redirect have not been click-tested — same category of gap as the previous
-entry's, now compounded across both halves of this feature.
+`pnpm test` (36 tests) all clean.
+
+**Live-verified in a follow-up pass, after root-causing the preview-server
+gap rather than working around it again.** The `EADDRINUSE`/no-port-bound
+failure from the previous two entries turned out to be a real, understood
+cause, not environment flakiness: this monorepo's `turbo.json` has no
+`envMode`/`passThroughEnv` configured, and Turborepo 2.x defaults to
+`envMode: "strict"` — confirmed directly via `turbo run --dry=json`, which
+reported `"envMode": "strict"` despite `turbo.json` never setting it. In
+strict mode, only vars explicitly allowlisted in `passThroughEnv` reach a
+task's spawned process, so a shell-exported `PORT`/`RUNTIME_PORT` (what
+`preview_start`'s `autoPort` and a manual `pnpm dev` retry both tried) never
+reached `next dev` at all — every sub-app silently fell back to its
+`.env`-hardcoded default port instead, which explains both the earlier
+"reports success, binds nothing" pattern (turbo's own dev-task wrapper
+doesn't treat a child's immediate `EADDRINUSE` exit as a task failure) and
+why setting the env var by hand didn't help either. Worked around (not
+fixed at the `turbo.json` level, which is shared, committed platform
+config out of scope for a plugin-only session) by pointing the browser tool
+directly at the *other* session's already-running dev server
+(`preview_start` with a plain `{url: "http://localhost:5020"}` — no
+`{name}`-based spawn, so autoPort/strict-env never enters the picture) —
+valid since Tally's `.local` plugin source is filesystem-watched and
+hot-copied into the runtime regardless of which session's `pnpm dev`
+process owns the watcher.
+
+Verified end-to-end against the live seeded data plus two throwaway test
+groups (removed after, one via the UI's own delete flow, one via a direct,
+scratch, git-ignored DB script for the create-history-then-close case since
+`deleteGroupAction` correctly refuses once history exists): "Close group"
+disabled with the exact tooltip text on `Bali Trip` (real non-zero
+balances); a fresh zero-history group showed "Delete" instead, and its
+`ConfirmDialog` (destructive, red confirm) deleted it and correctly
+returned to the plain groups list; adding one self-paid expense to a
+second fresh group flipped it to an *enabled* "Close group" (zero net
+balance), and its own `ConfirmDialog` (non-destructive) closed it,
+replacing the button with the "Closed" `StatusBadge` — group data stayed
+fully visible throughout, matching the confirm copy.
+
+**Found and fixed a real bug this verification pass was for**: navigating
+directly to a just-deleted group's `?g=<id>` URL (reachable via browser
+back/forward, a bookmark, or shared link — not just the artificial
+just-deleted-it case tested first) crashed to Next's generic "Something
+went wrong" error boundary instead of the plain groups list. Root cause:
+`deleteGroupAction` removes `group_members` rows along with `groups`
+(correct — nothing references them once the zero-history precondition
+holds), but `getGroupDetail` calls `requireGroupMember` *before* its own
+`if (!group) return null` fallback, and that helper throws
+`GroupAccessError` — not a null return — once no active membership row
+resolves for the id. `@detail/groups/page.tsx` had no try/catch around the
+call, so the throw reached Next's error boundary raw. This isn't unique to
+deletion — any inaccessible/nonexistent group id hits the identical path —
+but deletion is what makes it a normal, reachable flow rather than a
+manually-forged URL. Fixed by wrapping the `getGroupDetail` call in
+`GroupDetailSlot` with a try/catch that treats `GroupAccessError`
+(imported from `membership.ts`) the same as a null return — a stale link
+now renders nothing, like an unrecognized id always did — while any other,
+truly unexpected error still propagates normally. Re-verified live after
+the fix: the same stale URL now falls back cleanly, confirmed via both a
+screenshot and the DOM/accessibility tree (the console tool's own
+error-message buffer is known to persist stale entries across navigations
+in this environment, per this file's own task-9 note, so the DOM/visual
+check is the trustworthy signal here, not the console output). `pnpm
+typecheck`/`eslint`/`prettier --check` re-run clean after the fix.
 
 ---
 

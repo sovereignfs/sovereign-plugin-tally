@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { BalanceChip, Icon } from '@sovereignfs/ui';
 import { getGroupDetail } from '../../../_lib/groups';
 import { groupBalancesByCurrency, simplifyDebts } from '../../../_lib/balances';
+import { GroupAccessError } from '../../../_lib/membership';
 import {
   addMemberAction,
   archiveGroupAction,
@@ -42,7 +43,22 @@ export default async function GroupDetailSlot({
   const { g: selectedGroupId } = await searchParams;
   if (!selectedGroupId) return null;
 
-  const group = await getGroupDetail(selectedGroupId);
+  // `getGroupDetail` throws `GroupAccessError` (not a null return) when the
+  // id doesn't resolve to an active membership — the same shape covers "no
+  // access" and "deleted" (deleteGroupAction removes group_members too, so
+  // a stale `?g=<id>` link to an already-deleted group — a bookmark,
+  // browser history, back/forward after the post-delete redirect — hits
+  // this exact path). Caught here so a stale link renders nothing, same as
+  // an unrecognized id, instead of crashing to Next's generic error
+  // boundary; found live testing deleteGroupAction, not anticipated during
+  // review.
+  let group;
+  try {
+    group = await getGroupDetail(selectedGroupId);
+  } catch (error) {
+    if (error instanceof GroupAccessError) return null;
+    throw error;
+  }
   if (!group) return null;
 
   const balancesByCurrency = groupBalancesByCurrency(group.balances);
