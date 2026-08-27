@@ -2,9 +2,19 @@ import Link from 'next/link';
 import { BalanceChip, Icon } from '@sovereignfs/ui';
 import { getGroupDetail } from '../../../_lib/groups';
 import { groupBalancesByCurrency, simplifyDebts } from '../../../_lib/balances';
+import {
+  addMemberAction,
+  getGroupSettings,
+  removeMemberAction,
+  resendGuestInviteAction,
+  searchGroupDirectoryUsers,
+  updateGroupDetailsAction,
+  updateMemberRoleAction,
+} from '../../../_lib/group-settings';
 import { ActivityFeed } from '../../../_components/ActivityFeed';
 import { BalanceChipStack } from '../../../_components/BalanceChipStack';
 import { ExpenseForm } from '../../../_components/ExpenseForm';
+import { GroupSettingsButton } from '../../../_components/GroupSettingsButton';
 import { RecordSettlementDialog } from '../../../_components/RecordSettlementDialog';
 import { SettleUpButton } from '../../../_components/SettleUpButton';
 import styles from './page.module.css';
@@ -40,13 +50,30 @@ export default async function GroupDetailSlot({
     <div className={styles.detail}>
       <div className={styles.header}>
         <h2 className={styles.title}>{group.name}</h2>
-        <Link href="/tally/groups" className={styles.closeLink} aria-label="Close detail">
-          <Icon name="x" size="sm" aria-hidden />
-        </Link>
+        <div className={styles.headerActions}>
+          {group.myRole === 'owner' && (
+            <GroupSettingsButton
+              getSettingsAction={getGroupSettings.bind(null, group.id)}
+              updateDetailsAction={updateGroupDetailsAction.bind(null, group.id)}
+              searchUsersAction={searchGroupDirectoryUsers.bind(null, group.id)}
+              addMemberFormAction={addMemberAction.bind(null, group.id)}
+              resendInviteAction={resendGuestInviteAction.bind(null, group.id)}
+              removeMemberAction={removeMemberAction.bind(null, group.id)}
+              updateRoleAction={updateMemberRoleAction.bind(null, group.id)}
+            />
+          )}
+          <Link href="/tally/groups" className={styles.closeLink} aria-label="Close detail">
+            <Icon name="x" size="sm" aria-hidden />
+          </Link>
+        </div>
       </div>
 
       <div className={styles.actionsRow}>
-        <ExpenseForm groupId={group.id} defaultCurrency={group.defaultCurrency} members={memberOptions} />
+        <ExpenseForm
+          groupId={group.id}
+          defaultCurrency={group.defaultCurrency}
+          members={memberOptions}
+        />
         <RecordSettlementDialog
           groupId={group.id}
           defaultCurrency={group.defaultCurrency}

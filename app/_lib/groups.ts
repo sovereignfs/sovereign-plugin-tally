@@ -18,7 +18,12 @@ import {
   type GroupActivityItem,
   type GroupActivityMonth,
 } from './activity';
-import { computeNetBalances, resolveCounterparties, type CurrencyAmount, type NetBalance } from './balances';
+import {
+  computeNetBalances,
+  resolveCounterparties,
+  type CurrencyAmount,
+  type NetBalance,
+} from './balances';
 import { CATEGORY_LABEL_BY_VALUE } from './categories';
 import { pushTo } from './collections';
 import type { ActionResult } from './context';
@@ -63,8 +68,14 @@ export interface GroupListItem {
  */
 export async function listGroupsForUser(): Promise<GroupListItem[]> {
   const { db, userId, tenantId } = await getContext();
-  const { myMemberships, membersByGroup, expensesByGroup, payersByGroup, splitsByGroup, settlementsByGroup } =
-    await fetchMyGroupsData(db, userId, tenantId);
+  const {
+    myMemberships,
+    membersByGroup,
+    expensesByGroup,
+    payersByGroup,
+    splitsByGroup,
+    settlementsByGroup,
+  } = await fetchMyGroupsData(db, userId, tenantId);
 
   if (myMemberships.length === 0) return [];
 
@@ -106,7 +117,8 @@ export async function listGroupsForUser(): Promise<GroupListItem[]> {
   function labelForMember(groupId: string, memberId: string): string {
     const member = (membersByGroup.get(groupId) ?? []).find((m) => m.id === memberId);
     if (!member) return 'Unknown member';
-    if (member.kind === 'user' && member.userId) return nameByUserId.get(member.userId) ?? 'Unknown member';
+    if (member.kind === 'user' && member.userId)
+      return nameByUserId.get(member.userId) ?? 'Unknown member';
     return member.guestName ?? 'Guest';
   }
 
@@ -149,6 +161,11 @@ export interface GroupDetail {
   /** Month-grouped, described, merged expense + settlement timeline
    *  (UI-FLOW.md §4). */
   activity: GroupActivityMonth[];
+  /** Null if the current user isn't an active `kind = 'user'` member (can't
+   *  happen given `requireGroupMember`'s guard above, but a guest-only
+   *  caller has no session to begin with). Gates owner-only detail-column
+   *  controls (Group settings) without a second query. */
+  myRole: 'owner' | 'member' | null;
 }
 
 /**
@@ -311,6 +328,10 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     [...expenseActivity, ...settlementActivity].sort((a, b) => b.occurredOn - a.occurredOn),
   );
 
+  const myRole = myMemberId
+    ? (memberViews.find((m) => m.memberId === myMemberId)?.role ?? null)
+    : null;
+
   return {
     id: group.id,
     name: group.name,
@@ -320,6 +341,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     balances,
     myBalances,
     activity,
+    myRole,
   };
 }
 

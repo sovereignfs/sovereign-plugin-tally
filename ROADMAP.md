@@ -340,6 +340,77 @@ Verified live: Settings' Primary Currency dropdown lists all 162 options
 correctly. `pnpm typecheck`/`eslint`/`prettier --check`/`pnpm test` (36
 tests) all clean.
 
+**2026-08-27 — Group settings: details edit + member management (Post-MVP
+item 1, partial).** The next roadmap item picked up directly. Owner-only
+(`group-manage`), reached via a new gear-icon CTA in `@detail/groups/page.tsx`'s
+header — gated on a new `myRole` field added to `getGroupDetail`'s return
+type so the page can hide the icon for non-owners without a second query.
+New `app/_lib/group-settings.ts` holds every action: `updateGroupDetailsAction`
+(name/description/default currency/start+end dates, one form),
+`addMemberAction` (real user via a debounced `sdk.directory.searchUsers`
+picker, or a guest via a name field with an optional email that triggers an
+invite send), `resendGuestInviteAction`, `removeMemberAction`, and
+`updateMemberRoleAction` — all reusing task 4's existing
+`requireGroupManage`/`hasOtherActiveOwner`/`hasNonZeroBalance` guards
+directly, no new authorization logic needed. `GroupSettingsDialog` (new
+`app/_components/`) is a close structural port of Sheets'
+`WorkbookShareDialog` — UI-FLOW.md §8's own explicitly validated reference
+implementation for this exact shape (debounced 250ms/2-char search picker,
+`Dialog` + `useActionState`, bound server actions passed down as props via
+`.bind(null, groupId)` from the server-component page).
+
+**Guest email invite**: `sdk.mailer.send()` returns `Promise<void>` with no
+delivery-status return value, and no-ops silently when SMTP is unconfigured
+(`docs/plugin-development.md`) — genuinely indistinguishable from a real
+delivery at the call site. `sendGuestInviteEmail()` treats a non-throwing
+call as `guest_invite_status: 'sent'` and a thrown error (a real send
+failure or the platform's own per-plugin mailer rate limit) as `'bounced'`
+— the most honest signal actually available through this SDK surface,
+matching SPEC.md §8's own framing of the distinction. Also sends a
+best-effort "added to a group" notification to a newly-added *real* user
+(`sdk.notifications.send()`, try/catch, mirroring Sheets'
+`notifyMember` exactly) — deliberately scoped to just this one new action's
+own event, not a general Post-MVP item 7 activity/notification retrofit
+across the plugin's existing actions (none of which call
+`sdk.activity.log()`/`sdk.notifications.send()` today; left that way here
+too, for consistency rather than inconsistently wiring only the newest
+action).
+
+**Deliberately deferred, not overlooked**: `archiveGroupAction` ("Close
+group") and `deleteGroupAction` (hard delete). UI-FLOW.md §4 frames these as
+two separate detail-column header CTAs alongside the "Group settings" gear
+icon, not part of the settings screen itself — scoped out up front (agreed
+with the developer before starting) to keep this task reviewable; SPEC.md
+§6/§7 already fully specifies both for whenever they're picked up next.
+
+**A staleness bug proactively avoided, not found live**: reused the
+`key={primaryCurrency}`-remount fix `PrimaryCurrencyForm` already needed for
+its one uncontrolled `<Select>` (see that entry above), generalized here as
+a `refreshNonce` counter keying both the Details form and the add-member
+form — this dialog refreshes several `defaultValue`-driven fields together
+after every mutation, not just one, so the same staleness risk applies to
+all of them at once.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to the files this task
+touched — the rest of the plugin has pre-existing, unrelated Prettier drift
+this task didn't introduce and didn't attempt to mass-fix)/`pnpm
+design:tokens:check`/`pnpm test` (36 tests) all clean. **Not live-tested
+this session** — browser-based verification was blocked by a broken
+preview-server environment: `preview_start` reported success on three
+separate attempts (after enabling `autoPort` in `.claude/launch.json`'s
+`dev` config to work around another session's server already holding the
+usual port), but no process ever actually bound the assigned port on any
+attempt, confirmed directly via `lsof`/`ps` after waits up to 30s — a
+session/tooling issue, not a code concern, and not something further
+retries resolved. Per explicit developer decision, shipped without live
+verification. The add-member search picker, the guest-invite email path,
+and the last-owner/non-zero-balance guards' UI wiring (their *logic* is
+covered by task 3's existing unit tests via `hasOtherActiveOwner`/
+`hasNonZeroBalance`, but the dialog's own error-surfacing has not been
+click-tested) should get a first real walkthrough before being treated as
+fully proven — the same kind of gap task 8 flagged for settlements until
+`scripts/seed.ts` made real multi-member testing possible.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -347,9 +418,10 @@ tests) all clean.
 Everything else `CONCEPT.md`/`UI-FLOW.md` already designed for v1, roughly
 in priority order:
 
-1. **Group settings** — name/description/currency/dates edit, member
-   management (real-user search + guest add), guest email invite
-   (`mailer:sendExternal`, `resendGuestInviteAction`) — UI-FLOW.md §8.
+1. **Group settings** — 🚧 partially shipped 2026-08-27 (details edit +
+   member management — see Status below); "Close group"/"Delete" (the
+   detail-column header's other two owner-only CTAs, UI-FLOW.md §4) remain —
+   UI-FLOW.md §4/§8.
 2. ~~**People**~~ — ✅ shipped 2026-08-27 — cross-group rollup list + a
    single detail view (not "tabs" — see Status below for what was scoped
    vs. deferred) — UI-FLOW.md §4/§8.

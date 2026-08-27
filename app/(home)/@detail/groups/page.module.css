@@ -20,6 +20,12 @@
   margin: 0;
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-1);
+}
+
 .closeLink {
   display: flex;
   align-items: center;
