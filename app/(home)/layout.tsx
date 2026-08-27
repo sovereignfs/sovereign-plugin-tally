@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { ThreeColumnLayout } from '@sovereignfs/ui';
 import { TallySidebar } from '../_components/TallySidebar';
+import { registerPortabilityHandlers } from '../_lib/portability';
 import styles from './layout.module.css';
 
 /**
@@ -27,13 +28,23 @@ import styles from './layout.module.css';
  * stays visible; switching selection updates the detail column in place;
  * closing collapses back to 2 columns; zero console errors.
  */
-export default function TallyHomeLayout({
+export default async function TallyHomeLayout({
   children,
   detail,
 }: {
   children: ReactNode;
   detail: ReactNode;
 }) {
+  // In-process and reset on restart — the platform SDK requires
+  // re-registering from a request-scoped plugin route, so this runs on
+  // every request. Best-effort: a registration failure must not block the
+  // plugin's own UI (matches Docs' `app/layout.tsx` precedent exactly).
+  try {
+    await registerPortabilityHandlers();
+  } catch {
+    // Portability is a best-effort platform integration.
+  }
+
   return (
     <div className={styles.homeFrame} data-plugin-fullbleed>
       <ThreeColumnLayout sidebarWidth={240} detailWidth={360}>

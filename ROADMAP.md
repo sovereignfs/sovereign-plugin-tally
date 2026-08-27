@@ -735,6 +735,111 @@ separate UI surface from this feed, not a natural extension of it, and not
 part of what was asked for this task. UI-FLOW.md §5 is otherwise now fully
 implemented.
 
+**2026-08-27 — Portability: export/import/delete (Post-MVP item 8,
+delete-mitigation UI deferred — see below).** New `app/_lib/portability.ts`
+implements all three `sdk.portability` hooks (SPEC.md §7/§8), registered
+per-request from `(home)/layout.tsx` (best-effort try/catch, the same
+in-process-registration-resets-on-restart pattern Docs' own
+`registerPortabilityHandlers` already established — reused, not
+reinvented).
+
+- **Export** scoped to groups the exporting user actively belongs to
+  (`kind: 'user'`, not left) — groups, members, expenses, payers, splits,
+  settlements, plus the user's `primaryCurrency` setting. Other real users
+  appear only as a captured `label` (their resolved display name at export
+  time via `sdk.directory.resolveUsers`) with `isExportingUser: false` —
+  never re-linked to their real account on import, matching Docs' own
+  "informational only" precedent for other users' ids in an export. A
+  `warnings` entry on the export section surfaces this to the importing
+  user whenever the exported data actually includes another member.
+- **Import** creates a brand-new group per exported group (remapped ids via
+  `ctx.remapId`), the importing user as `owner`, and *every* other original
+  member — real user or guest alike — recreated as a `guest`
+  (`guestOwnerUserId` = importing user, `guestName` = the captured label).
+  Deliberate, spec-consistent choice: an import is a personal
+  backup/restore, not a live merge into other people's accounts, so nobody
+  else's real account gets silently re-added to a group they never agreed
+  to rejoin.
+- **Delete** (`deleteTallyData`) leaves every `group_members`/`expenses`/
+  `expense_payers`/`expense_splits`/`settlements` row in place exactly as
+  SPEC.md §7 requires (joint ledger data, not personally-owned) — only the
+  user's own `user_settings` row is removed, returning
+  `{ deleted: 0 | 1 }`.
+
+**Verified `sdk.db.getClient()` resolves the correct isolated plugin DB
+before writing any code, not assumed** — read `runtime/src/portability/
+{assemble,restore}.ts` directly and confirmed both wrap handler invocation
+in `runWithPortabilityPlugin(pluginId, ...)`, and `sdk-host.ts`'s
+`db.getClient()` checks that `AsyncLocalStorage` context as a fallback
+(`pluginId ?? portability context ?? background-job context ?? null`) —
+the same class of gotcha this file's own Status history already documents
+for scheduler/job handlers (`background-plugin-context.ts`), checked
+directly here rather than trusted by analogy.
+
+**No manifest change needed** — `data:export`/`data:import` were already
+declared at scaffold time (task 1), anticipating this work; this is what
+finally exercises them, same pattern as `activity:write`/
+`notifications:send` before it.
+
+**Live-verified end-to-end against the real running dev server + real
+database**, not just typecheck:
+
+- **Export**: fetched `GET /api/account/export?includeFiles=false` via
+  in-page `fetch()` — deliberately avoided the real "Export as ZIP"
+  download button, since downloading files needs explicit user permission
+  and this route stayed entirely in-browser instead — then manually parsed
+  the returned ZIP's Central Directory + Local File Header +
+  `DecompressionStream('deflate-raw')` (no library) to extract and inspect
+  `plugins/fs.sovereign.tally/data.json` directly. Confirmed against the
+  seeded data: 2 groups, 8 members with correct `isExportingUser` flags
+  (true only for "Dev Owner" in each group), 14 expenses across all 4
+  split methods and 2 currencies, and both settlements with correct
+  payer/payee.
+- **A real registration-timing non-bug surfaced and correctly diagnosed**:
+  the first export attempt excluded Tally entirely (`manifest.json`'s own
+  `notExported` array showed `"reason": "no-export-hook"`) — not a code
+  bug, but a consequence of the documented "registrations reset on
+  restart, re-register per request" pattern: this dev server process had
+  never actually served a Tally page since the registration code was
+  written, so `registerPortabilityHandlers()` had never run. Fixed by
+  navigating to a Tally page first; no code change needed.
+- **Import**: POSTed the same export ZIP to `/api/account/import` (the
+  `bundle` form field — found by reading the route directly after a first
+  attempt with a guessed field name 400'd). Confirmed via direct DB query:
+  two new groups created, the importing user as `owner` in both, all 6
+  other original members correctly converted to `guest` rows with
+  preserved names and `guestOwnerUserId`, all 14 expenses and both
+  settlements recreated with ids remapped throughout — settlement
+  `from`/`to` member ids point at the correct guest/owner rows (e.g.
+  "Jordan Lee → Dev Owner" survived the remap exactly). Cleaned up the two
+  test groups afterward via a scratch DB script so they don't linger
+  alongside the seeded dataset.
+- **Delete**: rather than running a real destructive account deletion
+  against the shared dev account, verified `deleteTallyData`'s actual
+  logic (mirrored verbatim in a scratch script, matching the shipped code
+  exactly) against a throwaway fake user id: correctly deletes that one
+  `user_settings` row, returns `{ deleted: 1 }`, is idempotent on a second
+  call (`{ deleted: 0 }`), and leaves every ledger table's row counts
+  completely unchanged.
+
+**Deliberately not built this task**: SPEC.md §7's "what this means for
+v1" soft mitigation — a client-side warning shown before the user proceeds
+to delete their account, if they have an outstanding Tally balance.
+Researched, not skipped: grepped the runtime/SDK for any hook a plugin
+could use to inject a warning into Account's own deletion-confirmation UI
+(`deletionWarning`/`DeletionWarning`/`provideDeletionWarning`) — no
+matches, confirming SPEC.md's own "not currently buildable" conclusion
+extends even to the soft version, not just the hard block, since there's
+no insertion point into a flow Tally doesn't own. The only buildable
+variant left is a static informational note somewhere in Tally's own UI
+(e.g. Settings) — not built here since it wasn't part of what was asked
+for this task ("Portability next") and is new UI scope, not a
+portability-hook wiring task; tracked as a small, separate follow-up
+rather than silently dropped.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to
+`app/_lib/portability.ts` + `app/(home)/layout.tsx`) all clean.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -769,10 +874,14 @@ in priority order:
    on the three SPEC.md §6 names (member added, expense added, settlement
    recorded) — see Status below. Unblocks Inbox's remaining actionable-rows
    half (item 4) whenever that's picked up next.
-8. **Portability** — `provideExport`/`provideImport`/`provideDelete`,
-   including the "block deletion with a non-zero balance is not actually
-   enforceable today" finding from SPEC.md §7 (client-side warning only,
-   pending a platform-level RFC for a real block).
+8. ~~**Portability**~~ — ✅ shipped 2026-08-27 —
+   `provideExport`/`provideImport`/`provideDelete`, including the "block
+   deletion with a non-zero balance is not actually enforceable today"
+   finding from SPEC.md §7 — see Status below. The soft client-side warning
+   mitigation SPEC.md §7 also names turned out to be separately
+   not-currently-buildable too (no SDK insertion point into Account's own
+   deletion UI) and remains a small, deferred follow-up, not silently
+   dropped.
 9. **New icons** — `users`, `arrow-left-right`, `send`/`bell-ring` —
    UI-FLOW.md §7.
 10. **Receipt image attach** — `sdk.storage` wiring per SPEC.md §8.
