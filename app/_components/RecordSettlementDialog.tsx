@@ -1,7 +1,16 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
-import { Button, CurrencyInput, Dialog, FormField, Input, Select, Textarea } from '@sovereignfs/ui';
+import {
+  Button,
+  CurrencyInput,
+  Dialog,
+  FormField,
+  Icon,
+  Input,
+  Select,
+  Textarea,
+} from '@sovereignfs/ui';
 import { recordSettlementAction, type ActionResult } from '../_lib/settlements';
 import { CURRENCY_OPTIONS } from '../_lib/currencies';
 import styles from './DialogForm.module.css';
@@ -32,7 +41,11 @@ function todayIsoDate(): string {
  * `useActionState` shape as `ExpenseForm`/`CreateGroupDialog`, submitting
  * to the identical `recordSettlementAction` the suggestion buttons use.
  */
-export function RecordSettlementDialog({ groupId, defaultCurrency, members }: RecordSettlementDialogProps) {
+export function RecordSettlementDialog({
+  groupId,
+  defaultCurrency,
+  members,
+}: RecordSettlementDialogProps) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     recordSettlementAction,
@@ -52,6 +65,7 @@ export function RecordSettlementDialog({ groupId, defaultCurrency, members }: Re
   return (
     <>
       <Button type="button" variant="secondary" onClick={() => setOpen(true)}>
+        <Icon name="arrow-left-right" size="sm" aria-hidden />
         Record settlement
       </Button>
       <Dialog open={open} onClose={() => setOpen(false)} size="sm" title="Record settlement">
@@ -101,7 +115,12 @@ export function RecordSettlementDialog({ groupId, defaultCurrency, members }: Re
 
           <FormField label="Amount" required>
             {(field) => (
-              <CurrencyInput {...field} valueCents={amountCents} onValueChange={setAmountCents} required />
+              <CurrencyInput
+                {...field}
+                valueCents={amountCents}
+                onValueChange={setAmountCents}
+                required
+              />
             )}
           </FormField>
 
@@ -119,7 +138,13 @@ export function RecordSettlementDialog({ groupId, defaultCurrency, members }: Re
 
           <FormField label="Date" required>
             {(field) => (
-              <Input {...field} name="settledOn" type="date" required defaultValue={todayIsoDate()} />
+              <Input
+                {...field}
+                name="settledOn"
+                type="date"
+                required
+                defaultValue={todayIsoDate()}
+              />
             )}
           </FormField>
 

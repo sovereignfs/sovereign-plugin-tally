@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button } from '@sovereignfs/ui';
+import { Button, Icon, type IconName } from '@sovereignfs/ui';
 import type { ActionResult } from '../_lib/context';
 import styles from '../(home)/inbox/page.module.css';
 
@@ -10,6 +10,7 @@ interface InboxActionButtonProps {
   label: string;
   pendingLabel: string;
   action: () => Promise<ActionResult>;
+  icon?: IconName;
 }
 
 /**
@@ -21,7 +22,7 @@ interface InboxActionButtonProps {
  * cooldown), so the row simply isn't in the feed anymore once
  * `router.refresh()` re-fetches it server-side.
  */
-export function InboxActionButton({ label, pendingLabel, action }: InboxActionButtonProps) {
+export function InboxActionButton({ label, pendingLabel, action, icon }: InboxActionButtonProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,7 @@ export function InboxActionButton({ label, pendingLabel, action }: InboxActionBu
           });
         }}
       >
+        {icon && <Icon name={icon} size="sm" aria-hidden />}
         {pending ? pendingLabel : label}
       </Button>
       {error && (

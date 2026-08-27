@@ -85,6 +85,7 @@ export default async function InboxPage() {
                       <InboxActionButton
                         label="Remind"
                         pendingLabel="Sending…"
+                        icon="send"
                         action={sendReminderAction.bind(null, item.groupId, item.memberId)}
                       />
                     </span>

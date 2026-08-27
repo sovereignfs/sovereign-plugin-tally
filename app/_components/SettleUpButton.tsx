@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
-import { Button } from '@sovereignfs/ui';
+import { Button, Icon } from '@sovereignfs/ui';
 import { recordSettlementAction, type ActionResult } from '../_lib/settlements';
 import styles from './SettleUpButton.module.css';
 
@@ -39,6 +39,7 @@ export function SettleUpButton({
       <input type="hidden" name="amountCents" value={amountCents} />
       <input type="hidden" name="currency" value={currency} />
       <Button type="submit" size="sm" variant="secondary" disabled={pending}>
+        <Icon name="arrow-left-right" size="sm" aria-hidden />
         {pending ? 'Settling…' : 'Settle up'}
       </Button>
       {state && !state.ok && (

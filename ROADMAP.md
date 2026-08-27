@@ -840,6 +840,60 @@ rather than silently dropped.
 `pnpm typecheck`/`eslint`/`prettier --check` (scoped to
 `app/_lib/portability.ts` + `app/(home)/layout.tsx`) all clean.
 
+**2026-08-27 — New icons: `users`/`arrow-left-right`/`send` (Post-MVP item
+9).** Checked the platform's curated Lucide set before writing any code —
+UI-FLOW.md §7's "still needed" list turned out to be stale: all three icons
+already existed in the platform's `scripts/icon-list.ts` and were already
+generated in `packages/ui` (added at some point for Sheets/Docs/Shopper's
+own needs, never circled back to update this plugin's own UI-FLOW.md).
+`bell-ring` (the alternate option UI-FLOW.md named for the Remind action)
+is **not** in the curated set — only `bell` is — so `send` was the only
+one of the two actually available, settling that choice. **This task's
+real work was consuming the icons in Tally's own UI, not creating them**:
+
+- `users` — already wired into `TallySidebar`'s People nav link and
+  `people/page.tsx`'s empty state before this task; person rows
+  deliberately use `Avatar` (initials-based) instead, a richer,
+  more-correct identity affordance than a generic icon for a contact list
+  — not a gap, a better existing choice UI-FLOW.md's older phrasing hadn't
+  anticipated.
+- `arrow-left-right` — added to both `SettleUpButton` (the auto-suggested,
+  one-click "Settle up" confirm) and `RecordSettlementDialog`'s "Record
+  settlement" trigger. Scoped to both, not just the literal
+  `SettleUpButton` UI-FLOW.md names, since the two buttons represent the
+  same settle action in the same Balances section — icon-ing only one
+  would have read as inconsistent, half-finished polish.
+- `send` — added to `InboxActionButton` via a new optional `icon?:
+  IconName` prop, wired only for the Remind action (`icon="send"` at its
+  Inbox call site) — deliberately **not** added to Resend, matching
+  UI-FLOW.md §7's literal scope (only Remind gets a named icon).
+
+Followed the exact icon-inside-`Button`-as-children pattern already
+established in this codebase (`GroupSettingsButton`'s icon-only gear
+button, Sheets' `WorkbookShareButton`'s icon+label "Share" button) rather
+than inventing a new convention.
+
+**Live-verified against the real running dev server** (same
+`preview_start {url: ...}` workaround as prior entries — the `{name:
+"dev"}` spawn path is still broken per this file's own documented
+`turbo.json` strict-envMode finding), via direct DOM/SVG inspection rather
+than a screenshot glance alone: confirmed all 3 "Settle up" suggestion
+buttons in the seeded "Roomies" group render the `arrow-left-right` SVG
+(path data matches Lucide's icon exactly), "Record settlement" renders the
+same icon, and all 3 "Remind" rows in Inbox render the `send` SVG (paper-
+airplane path). A stale `GroupAccessError` appeared in the console buffer
+during this pass — confirmed via a forced reload to be the exact
+byte-identical entries as before the reload, i.e. this file's own
+already-documented "console buffer persists stale entries across
+navigations" quirk (task 9's note), not a fresh error; the DOM/screenshot
+checks showed no visible breakage either way.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to the 4 touched
+files, including `RecordSettlementDialog.tsx`'s necessary reformat once
+its import line grew past print-width — confirmed via filtered diff to be
+pure re-wrapping plus the intended icon addition, no logic changes)/`pnpm
+design:tokens:check`/`pnpm test` (36 tests) all clean.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -882,8 +936,8 @@ in priority order:
    not-currently-buildable too (no SDK insertion point into Account's own
    deletion UI) and remains a small, deferred follow-up, not silently
    dropped.
-9. **New icons** — `users`, `arrow-left-right`, `send`/`bell-ring` —
-   UI-FLOW.md §7.
+9. ~~**New icons**~~ — ✅ shipped 2026-08-27 — `users`, `arrow-left-right`,
+   `send` — see Status below — UI-FLOW.md §7.
 10. **Receipt image attach** — `sdk.storage` wiring per SPEC.md §8.
 
 ### Status — Overview (item 3)
