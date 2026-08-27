@@ -4,6 +4,8 @@ import { getGroupDetail } from '../../../_lib/groups';
 import { groupBalancesByCurrency, simplifyDebts } from '../../../_lib/balances';
 import {
   addMemberAction,
+  archiveGroupAction,
+  deleteGroupAction,
   getGroupSettings,
   removeMemberAction,
   resendGuestInviteAction,
@@ -14,6 +16,7 @@ import {
 import { ActivityFeed } from '../../../_components/ActivityFeed';
 import { BalanceChipStack } from '../../../_components/BalanceChipStack';
 import { ExpenseForm } from '../../../_components/ExpenseForm';
+import { GroupLifecycleActions } from '../../../_components/GroupLifecycleActions';
 import { GroupSettingsButton } from '../../../_components/GroupSettingsButton';
 import { RecordSettlementDialog } from '../../../_components/RecordSettlementDialog';
 import { SettleUpButton } from '../../../_components/SettleUpButton';
@@ -51,6 +54,16 @@ export default async function GroupDetailSlot({
       <div className={styles.header}>
         <h2 className={styles.title}>{group.name}</h2>
         <div className={styles.headerActions}>
+          {group.myRole === 'owner' && (
+            <GroupLifecycleActions
+              groupName={group.name}
+              isArchived={group.archivedAt !== null}
+              hasHistory={group.hasHistory}
+              hasOutstandingBalance={group.balances.some((b) => b.amountCents !== 0)}
+              archiveAction={archiveGroupAction.bind(null, group.id)}
+              deleteAction={deleteGroupAction.bind(null, group.id)}
+            />
+          )}
           {group.myRole === 'owner' && (
             <GroupSettingsButton
               getSettingsAction={getGroupSettings.bind(null, group.id)}

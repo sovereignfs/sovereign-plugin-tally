@@ -411,6 +411,77 @@ click-tested) should get a first real walkthrough before being treated as
 fully proven — the same kind of gap task 8 flagged for settlements until
 `scripts/seed.ts` made real multi-member testing possible.
 
+**2026-08-27 — Group settings: Close group + Delete (Post-MVP item 1,
+completes it).** The remaining half of the previous entry, picked up
+directly. Two new detail-column header CTAs, owner-only, mutually
+exclusive per SPEC.md §7's bright line: a group with any expense or
+settlement history — even soft-deleted, since that's still real history —
+can only ever be **closed** (soft-archived, `archivedAt` set, data stays
+fully intact and visible), never hard-deleted; a group with *zero* history,
+ever, can only be **deleted** (a true hard delete — nothing exists yet
+another member's math could depend on). `getGroupDetail` (`app/_lib/groups.ts`)
+gained `archivedAt`/`hasHistory` fields to drive this — `hasHistory` reuses
+the same unfiltered `expenses`/`settlements` row fetches the activity feed
+already pulls, no new query. Once closed, the header shows a "Closed"
+`StatusBadge` in place of any button — there's no "reopen" action to route
+to yet, so re-showing "Close group" on an already-closed group would be a
+dead end.
+
+New `archiveGroupAction`/`deleteGroupAction` (`app/_lib/group-settings.ts`,
+alongside the other group-manage lifecycle actions from the previous
+entry): `archiveGroupAction` loops every active member through the
+existing `hasNonZeroBalance` helper (task 4) and blocks if any is non-zero,
+matching UI-FLOW.md §4's "disabled with a tooltip explaining why" —
+`GroupLifecycleActions` (new `app/_components/`) computes that same
+condition client-side from `group.balances` (already fetched for the
+Balances section, no extra query) so the button renders disabled
+proactively rather than only failing after a click. `deleteGroupAction`
+checks for any `expenses`/`settlements` row (any, including soft-deleted)
+and, only once confirmed zero, cascade-deletes `group_members` rows before
+the `groups` row itself — safe specifically *because* the zero-history
+precondition rules out any `expense_payers`/`expense_splits` row
+referencing one, unlike `removeMemberAction`'s soft-remove-only approach
+elsewhere in this same file, which exists precisely to avoid that
+orphaning risk when history *does* exist.
+
+**Confirm-dialog pattern researched, not invented from scratch**: this
+plugin's first destructive-action confirm, so the codebase was checked for
+precedent first rather than hand-rolling one. `packages/ui`'s `ConfirmDialog`
+(built on native `<dialog>`, not the fixed-size `Dialog`) plus a
+`useTransition`-wrapped async `onConfirm` is the one established pattern,
+found in kanban's `ManageProjectDialog` "Danger zone" (project delete) and
+mirrored identically in Sheets' `WorkbookView` (workbook delete) — reused
+here verbatim rather than inventing a second convention. Deliberately
+**not** copied wholesale, though: kanban's boxed "Danger zone" section
+(label + tinted background) is specific to a settings *dialog's* body;
+UI-FLOW.md §4 places Close/Delete as compact peer CTAs directly in the
+detail column's header row alongside "Group settings" and the close link,
+so `GroupLifecycleActions` renders plain buttons there instead, matching
+the header's existing density — only the `ConfirmDialog` + `useTransition`
+wiring itself was reused, not the container styling around it. "Close
+group" uses `Button variant="ghost"` (matching the header's other icon-style
+buttons) with a non-destructive `ConfirmDialog`; "Delete" uses
+`variant="destructive"` (the codebase's established delete-trigger style,
+confirmed against both reference implementations) with `ConfirmDialog`'s
+own `destructive` prop. A successful delete navigates back to
+`/tally/groups` via `router.replace` (not `push`, so a deleted group's URL
+doesn't linger in back-history) — necessary since the just-deleted group's
+`?g=<id>` URL would otherwise keep resolving to nothing once revalidated.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to this task's touched
+files, same rationale as the previous entry)/`pnpm design:tokens:check`/
+`pnpm test` (36 tests) all clean. **Not live-tested this session** — the
+same preview-server environment issue as the previous entry recurred
+identically on a fresh attempt (`preview_start` reported success, `autoPort`
+assigned a free port, but nothing ever bound it, reconfirmed via `lsof`
+after a 20s wait) and was not re-investigated further as a now-recurring,
+already-diagnosed environment issue rather than a new one. Shipped without
+live verification per the same prior developer decision. The Close/Delete
+buttons' visibility toggle (`hasHistory`), the disabled+tooltip state
+(`hasOutstandingBalance`), the `ConfirmDialog` wiring, and the post-delete
+redirect have not been click-tested — same category of gap as the previous
+entry's, now compounded across both halves of this feature.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -418,10 +489,9 @@ fully proven — the same kind of gap task 8 flagged for settlements until
 Everything else `CONCEPT.md`/`UI-FLOW.md` already designed for v1, roughly
 in priority order:
 
-1. **Group settings** — 🚧 partially shipped 2026-08-27 (details edit +
-   member management — see Status below); "Close group"/"Delete" (the
-   detail-column header's other two owner-only CTAs, UI-FLOW.md §4) remain —
-   UI-FLOW.md §4/§8.
+1. ~~**Group settings**~~ — ✅ shipped 2026-08-27 (details edit + member
+   management, then Close group/Delete — see Status below) — UI-FLOW.md
+   §4/§8.
 2. ~~**People**~~ — ✅ shipped 2026-08-27 — cross-group rollup list + a
    single detail view (not "tabs" — see Status below for what was scoped
    vs. deferred) — UI-FLOW.md §4/§8.

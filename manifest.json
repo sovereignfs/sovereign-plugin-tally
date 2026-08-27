@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fs.sovereign.tally",
   "name": "Tally",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Split shared expenses with a group and track who owes whom.",
   "type": "sovereign",
   "runtime": "native",

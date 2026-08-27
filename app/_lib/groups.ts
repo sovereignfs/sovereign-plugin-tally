@@ -166,6 +166,13 @@ export interface GroupDetail {
    *  caller has no session to begin with). Gates owner-only detail-column
    *  controls (Group settings) without a second query. */
   myRole: 'owner' | 'member' | null;
+  /** Set by "Close group" (SPEC.md §7) — null while active. */
+  archivedAt: number | null;
+  /** True if the group has ever had an expense or settlement row, counting
+   *  soft-deleted ones — SPEC.md §7's bright line between "Close" (any
+   *  history) and "Delete" (none, ever). Gates which of the two
+   *  detail-column lifecycle CTAs renders. */
+  hasHistory: boolean;
 }
 
 /**
@@ -342,6 +349,10 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     myBalances,
     activity,
     myRole,
+    archivedAt: group.archivedAt,
+    // groupExpenses/groupSettlements are unfiltered by deletedAt — a
+    // soft-deleted row is still real history a "Delete" must never discard.
+    hasHistory: groupExpenses.length > 0 || groupSettlements.length > 0,
   };
 }
 

@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { and, eq, isNull } from 'drizzle-orm';
 import { sdk } from '@sovereignfs/sdk';
 import type { DirectoryUser } from '@sovereignfs/sdk';
-import { groupMembers, groups } from '../_db/schema';
+import { expenses, groupMembers, groups, settlements } from '../_db/schema';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
 import { isGroupMemberRole } from './group-rules';
@@ -450,4 +450,91 @@ export async function updateMemberRoleAction(
 
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Role updated.' };
+}
+
+/**
+ * "Close group" — the only path once a group has any expense/settlement
+ * history, blocked while any active member has a non-zero balance (SPEC.md
+ * §7). Soft: sets `archivedAt`, never deletes anything.
+ */
+export async function archiveGroupAction(groupId: string): Promise<ActionResult> {
+  const { db, userId, tenantId } = await getContext();
+  await requireGroupManage(db, tenantId, userId, groupId);
+
+  const [group] = await db
+    .select({ archivedAt: groups.archivedAt })
+    .from(groups)
+    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+  if (!group) return { ok: false, error: 'Group not found.' };
+  if (group.archivedAt) return { ok: true, message: 'Group already closed.' };
+
+  const activeMembers = await db
+    .select({ id: groupMembers.id })
+    .from(groupMembers)
+    .where(
+      and(
+        eq(groupMembers.groupId, groupId),
+        eq(groupMembers.tenantId, tenantId),
+        isNull(groupMembers.leftAt),
+      ),
+    );
+  for (const member of activeMembers) {
+    if (await hasNonZeroBalance(db, groupId, member.id)) {
+      return {
+        ok: false,
+        error: 'This group has an outstanding balance and cannot be closed yet.',
+      };
+    }
+  }
+
+  await db
+    .update(groups)
+    .set({ archivedAt: now(), updatedAt: now() })
+    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+
+  revalidatePath('/tally/groups');
+  return { ok: true, message: 'Group closed.' };
+}
+
+/**
+ * Hard delete — only ever offered/succeeds when the group has zero
+ * expenses and zero settlements, ever (counting soft-deleted rows), i.e.
+ * nothing exists yet that another member's math could depend on (SPEC.md
+ * §7). Safe to cascade-delete `group_members` rows here specifically
+ * because that history-free precondition rules out any `expense_payers`/
+ * `expense_splits` row referencing one — the orphaning risk `removeMemberAction`'s
+ * soft-remove protects against elsewhere in this plugin cannot occur here.
+ */
+export async function deleteGroupAction(groupId: string): Promise<ActionResult> {
+  const { db, userId, tenantId } = await getContext();
+  await requireGroupManage(db, tenantId, userId, groupId);
+
+  const [group] = await db
+    .select({ id: groups.id })
+    .from(groups)
+    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+  if (!group) return { ok: true };
+
+  const [existingExpense] = await db
+    .select({ id: expenses.id })
+    .from(expenses)
+    .where(eq(expenses.groupId, groupId));
+  const [existingSettlement] = await db
+    .select({ id: settlements.id })
+    .from(settlements)
+    .where(eq(settlements.groupId, groupId));
+  if (existingExpense || existingSettlement) {
+    return {
+      ok: false,
+      error: 'This group has expense or settlement history and can only be closed, not deleted.',
+    };
+  }
+
+  await db
+    .delete(groupMembers)
+    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.tenantId, tenantId)));
+  await db.delete(groups).where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+
+  revalidatePath('/tally/groups');
+  return { ok: true, message: 'Group deleted.' };
 }
