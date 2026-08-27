@@ -1,7 +1,9 @@
 'use server';
 
 import { and, eq, isNull } from 'drizzle-orm';
+import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
+import { sdk } from '@sovereignfs/sdk';
 import { expensePayers, expenseSplits, expenses, groupMembers } from '../_db/schema';
 import { CATEGORY_OPTIONS } from './categories';
 import type { ActionResult } from './context';
@@ -87,7 +89,7 @@ export async function createExpenseAction(
   // member of this group — never trust client-supplied ids without
   // re-checking against the real membership table.
   const activeMembers = await db
-    .select({ id: groupMembers.id })
+    .select({ id: groupMembers.id, kind: groupMembers.kind, userId: groupMembers.userId })
     .from(groupMembers)
     .where(
       and(
@@ -108,7 +110,10 @@ export async function createExpenseAction(
   if (splitMethod === 'amount') {
     const sum = participants.reduce((acc, p) => acc + (p.amountCents ?? 0), 0);
     if (sum !== amountCents) {
-      return { ok: false, error: `Split amounts (${sum / 100}) must add up to the total (${amountCents / 100}).` };
+      return {
+        ok: false,
+        error: `Split amounts (${sum / 100}) must add up to the total (${amountCents / 100}).`,
+      };
     }
     splits = participants.map((p) => ({
       memberId: p.memberId,
@@ -133,7 +138,8 @@ export async function createExpenseAction(
       }
     }
     const totalWeight = order.reduce((sum, id) => sum + (weights.get(id) ?? 0), 0);
-    if (totalWeight <= 0) return { ok: false, error: 'Split shares must add up to more than zero.' };
+    if (totalWeight <= 0)
+      return { ok: false, error: 'Split shares must add up to more than zero.' };
 
     const resolved = distributeByWeights(amountCents, weights, order);
     splits = order.map((memberId) => ({
@@ -177,6 +183,37 @@ export async function createExpenseAction(
       shareUnits: s.shareUnits,
     })),
   );
+
+  void sdk.activity.log({
+    action: 'expense.added',
+    targetType: 'expense',
+    targetId: expenseId,
+    summary: `Added "${description}" (${currency} ${(amountCents / 100).toFixed(2)})`,
+  });
+
+  // "Expense added by someone else" (SPEC.md §6) — every other active
+  // user-kind member, never guests (no session to notify). Best-effort:
+  // Promise.allSettled so one recipient's failure never affects another's,
+  // or the already-succeeded expense creation.
+  const recipientUserIds = activeMembers
+    .filter((m) => m.kind === 'user' && m.userId && m.userId !== userId)
+    .map((m) => m.userId as string);
+  if (recipientUserIds.length > 0) {
+    const requestHeaders = await headers();
+    await Promise.allSettled(
+      recipientUserIds.map((recipientUserId) =>
+        sdk.notifications.send(
+          {
+            recipientUserId,
+            title: 'New expense added',
+            body: `${description} — ${currency} ${(amountCents / 100).toFixed(2)}`,
+            url: `/tally/groups?g=${groupId}`,
+          },
+          requestHeaders,
+        ),
+      ),
+    );
+  }
 
   revalidatePath('/tally/groups');
   return { ok: true, message: `Added "${description}".` };

@@ -535,6 +535,105 @@ in this environment, per this file's own task-9 note, so the DOM/visual
 check is the trustworthy signal here, not the console output). `pnpm
 typecheck`/`eslint`/`prettier --check` re-run clean after the fix.
 
+**2026-08-27 — Notifications + activity log wiring (Post-MVP item 7).** Every
+mutating action across the plugin now calls `sdk.activity.log()`, and the
+three events SPEC.md §6 names explicitly also call `sdk.notifications.send()`.
+No manifest change needed — `activity:write` and `notifications:send` were
+both already declared at scaffold time (task 1), anticipating this work;
+this is what finally exercises them.
+
+**Researched before writing any code**: `sdk.activity.log()`'s own SDK-level
+doc comment calls it "RFC 0005 — reserved surface, not yet implemented,"
+which reads as a hard blocker — checked the runtime's actual implementation
+directly instead of trusting the comment at face value, and found
+`activity.log` in `runtime/src/sdk-host.ts` fully implemented (writes to the
+platform's real activity table via `recordActivity`), with a genuine
+consumer already live at `/console/activity` (Console's admin activity
+viewer) and one real, working precedent already in the codebase —
+`plugins/account/app/actions.ts` calls `void sdk.activity.log({ action,
+summary })` (fire-and-forget, no try/catch, no `requestHeaders` — it reads
+`headers()` internally, unlike `mailer.send`/`notifications.send`) on every
+self-mutation (password change, TOTP enroll, etc.). Matched that exact
+pattern rather than inventing a new one; the "reserved surface" comment
+appears stale.
+
+**Action → event mapping** (`action` string, dotted verb; `summary` plain
+text; `notify` only where SPEC.md §6's table names one):
+`createGroupAction` → `group.created`; `createExpenseAction` →
+`expense.added` + notify every other active *user*-kind member (never
+guests — no session), excluding the actor, via `Promise.allSettled` so one
+recipient's failure can't affect another's or the already-succeeded
+expense; `recordSettlementAction` → `settlement.recorded` + notify the
+counterparty, resolved as "whichever side the actor wasn't on" — only
+well-defined when the actor is actually one of the two parties (a third
+party recording a settlement between two others has no single spec-defined
+recipient, so no notification fires for that case, matching SPEC.md §6's
+literal formula rather than guessing a broader behavior);
+`updateGroupDetailsAction` → `group.updated`; `addMemberAction` →
+`group.member_added` (both the real-user and guest paths — the user path
+already had its own "added to a group" notification from the previous
+Group Settings task, now paired with a matching log entry);
+`resendGuestInviteAction` → `group.guest_invite_resent`;
+`removeMemberAction` → `group.member_removed`; `updateMemberRoleAction` →
+`group.member_role_updated`; `archiveGroupAction` → `group.closed`;
+`deleteGroupAction` → `group.deleted`; `updateUserSettingsAction` →
+`settings.primary_currency_updated` (no notification — a personal
+preference, no one else to tell, but still logged, matching `account`'s own
+precedent of logging every self-mutation regardless of audience).
+
+**Live-verified against the running dev server** (the same
+`preview_start {url: ...}` workaround established in the previous entry),
+not just via typecheck — the two genuinely non-trivial recipient-resolution
+paths, specifically:
+
+- Recorded a real settlement (Dev Owner → Dev Admin, USD 15.00) in the
+  seeded "Roomies" group. Confirmed in Console's real `/console/activity`
+  page: `fs.sovereign.tally:settlement.recorded` — "Recorded a payment of
+  USD 15.00" — correctly namespaced by the runtime
+  (`${pluginId}:${action}`), sitting directly above a `push.delivery_failed`
+  / "push is not configured on this instance" platform log line at the same
+  timestamp, which itself only fires *after* a real notification record is
+  created — indirect but real confirmation the send path was reached, not
+  short-circuited earlier (e.g. by a permission check). Queried the
+  platform's own `notifications` table directly and found exactly one new
+  row: recipient = Dev Admin's real user id, title "Settlement recorded",
+  body "A payment of USD 15.00 was recorded." — the counterparty, not the
+  actor, matching the resolution logic exactly.
+- Added a real expense (USD 40.00, split across all 4 members) to the same
+  group. Queried `notifications` again: exactly 3 new rows, one each for
+  Dev Admin/Dev User/Dev Auditor (every active user-kind member except the
+  actor, Dev Owner) — confirming the `Promise.allSettled` multi-recipient
+  path resolves the correct recipient set, not more, not fewer.
+
+**A real UI-testing obstacle hit and worked around, not a code bug**:
+`ExpenseForm`'s "Split between" checkboxes are React-controlled — setting
+`.checked` on the underlying DOM node directly (what the browser tool's
+`form_input` does for a checkbox) updates the visible DOM but not the
+component's own state, so a submission after only that path still saw zero
+selected participants server-side and correctly rejected it. A real,
+trusted click on each checkbox's `<label>` (verified via a direct
+`el.checked` JS read between clicks, not just the screenshot, since the
+custom checkbox's checked-state styling wasn't visually obvious at the
+browser tool's screenshot resolution) fired the actual `onChange` and
+worked as expected — noted here since this exact form is one of the
+harder-to-drive parts of the plugin's UI for any future live-testing pass,
+not something specific to this task.
+
+Test data reset afterward (`pnpm seed -- --reset`) so the test settlement
+and expense don't linger in the seeded dataset; confirmed "Roomies" back to
+its exact original balance (`Owed USD 1632.93`) and activity feed via a
+fresh screenshot. The handful of test notification/activity-log rows left
+in the platform's own tables were **not** cleaned up — unlike the
+plugin-scoped seed dataset, these are the platform's real accumulating
+usage data in what's now a live, in-use instance (per the developer's own
+"I deployed and started using" context), not pollution requiring reset.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to this task's touched
+files)/`pnpm design:tokens:check`/`pnpm test` (36 tests) all clean, both
+before and after live verification (no code changes were needed as a
+result of live testing this time — everything worked as designed on the
+first real attempt).
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -563,9 +662,11 @@ in priority order:
    above, a separate, much larger surface UI-FLOW.md §8 also covers.)
 6. **Mobile** — `ResponsiveSurface` fork, self-rendered `MobileFooter`,
    drill-down stack — UI-FLOW.md §6.
-7. **Notifications + activity log wiring** — across every mutating action
-   from tasks 6–8 above, not just the ones needed to prove the MVP slice —
-   SPEC.md §6.
+7. ~~**Notifications + activity log wiring**~~ — ✅ shipped 2026-08-27 —
+   `sdk.activity.log()` on every mutating action, `sdk.notifications.send()`
+   on the three SPEC.md §6 names (member added, expense added, settlement
+   recorded) — see Status below. Unblocks Inbox's remaining actionable-rows
+   half (item 4) whenever that's picked up next.
 8. **Portability** — `provideExport`/`provideImport`/`provideDelete`,
    including the "block deletion with a non-zero balance is not actually
    enforceable today" finding from SPEC.md §7 (client-side warning only,

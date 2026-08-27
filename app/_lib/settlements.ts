@@ -1,7 +1,9 @@
 'use server';
 
 import { and, eq, isNull } from 'drizzle-orm';
+import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
+import { sdk } from '@sovereignfs/sdk';
 import { groupMembers, settlements } from '../_db/schema';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
@@ -53,7 +55,7 @@ export async function recordSettlementAction(
   }
 
   const activeMembers = await db
-    .select({ id: groupMembers.id })
+    .select({ id: groupMembers.id, kind: groupMembers.kind, userId: groupMembers.userId })
     .from(groupMembers)
     .where(
       and(
@@ -67,8 +69,9 @@ export async function recordSettlementAction(
     return { ok: false, error: 'Invalid participant.' };
   }
 
+  const settlementId = newId();
   await db.insert(settlements).values({
-    id: newId(),
+    id: settlementId,
     groupId,
     tenantId,
     fromMemberId,
@@ -80,6 +83,42 @@ export async function recordSettlementAction(
     createdByUserId: userId,
     createdAt: now(),
   });
+
+  void sdk.activity.log({
+    action: 'settlement.recorded',
+    targetType: 'settlement',
+    targetId: settlementId,
+    summary: `Recorded a payment of ${currency} ${(amountCents / 100).toFixed(2)}`,
+  });
+
+  // Notify the counterparty (SPEC.md §6) — whichever side the actor
+  // wasn't on. Only resolvable when the actor is actually one of the two
+  // parties; a third party recording a settlement between two other
+  // members has no single well-defined counterparty per spec, so no
+  // notification fires for that case. Guests are skipped — no session.
+  const myMemberId =
+    activeMembers.find((m) => m.kind === 'user' && m.userId === userId)?.id ?? null;
+  const counterpartyMemberId =
+    myMemberId === fromMemberId ? toMemberId : myMemberId === toMemberId ? fromMemberId : null;
+  const counterparty = counterpartyMemberId
+    ? (activeMembers.find((m) => m.id === counterpartyMemberId) ?? null)
+    : null;
+  if (counterparty?.kind === 'user' && counterparty.userId) {
+    try {
+      await sdk.notifications.send(
+        {
+          recipientUserId: counterparty.userId,
+          title: 'Settlement recorded',
+          body: `A payment of ${currency} ${(amountCents / 100).toFixed(2)} was recorded.`,
+          url: `/tally/groups?g=${groupId}`,
+        },
+        await headers(),
+      );
+    } catch {
+      // Best-effort — a failed notification must never undo a settlement
+      // that already succeeded.
+    }
+  }
 
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Settled up.' };

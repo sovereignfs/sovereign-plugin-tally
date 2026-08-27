@@ -398,6 +398,13 @@ export async function createGroupAction(
     joinedAt: timestamp,
   });
 
+  void sdk.activity.log({
+    action: 'group.created',
+    targetType: 'group',
+    targetId: groupId,
+    summary: `Created "${name}"`,
+  });
+
   revalidatePath('/tally/groups');
   return { ok: true, message: `Created "${name}".` };
 }

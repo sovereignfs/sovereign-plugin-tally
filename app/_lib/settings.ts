@@ -2,6 +2,7 @@
 
 import { eq } from 'drizzle-orm';
 import { revalidatePath } from 'next/cache';
+import { sdk } from '@sovereignfs/sdk';
 import { userSettings } from '../_db/schema';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
@@ -58,6 +59,13 @@ export async function updateUserSettingsAction(
       target: userSettings.userId,
       set: { primaryCurrency, updatedAt: now() },
     });
+
+  void sdk.activity.log({
+    action: 'settings.primary_currency_updated',
+    targetType: 'user_settings',
+    targetId: userId,
+    summary: `Primary currency set to ${primaryCurrency}`,
+  });
 
   revalidatePath('/tally/settings');
   revalidatePath('/tally');

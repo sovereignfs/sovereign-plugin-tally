@@ -161,6 +161,13 @@ export async function updateGroupDetailsAction(
     })
     .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
 
+  void sdk.activity.log({
+    action: 'group.updated',
+    targetType: 'group',
+    targetId: groupId,
+    summary: `Updated group settings for "${name}"`,
+  });
+
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Group settings saved.' };
 }
@@ -268,6 +275,14 @@ export async function addMemberAction(
       joinedAt: now(),
     });
 
+    void sdk.activity.log({
+      action: 'group.member_added',
+      targetType: 'group',
+      targetId: groupId,
+      subjectUserId: memberUserId,
+      summary: `Added ${resolvedUser.name ?? resolvedUser.email} to "${group.name}"`,
+    });
+
     // Added-to-a-group notice (SPEC.md §6's event table) — best-effort, a
     // failure here must never undo an add that already succeeded.
     try {
@@ -318,6 +333,13 @@ export async function addMemberAction(
       guestOwnerUserId: userId,
       role: 'member',
       joinedAt: now(),
+    });
+
+    void sdk.activity.log({
+      action: 'group.member_added',
+      targetType: 'group',
+      targetId: groupId,
+      summary: `Added guest ${guestName} to "${group.name}"`,
     });
 
     revalidatePath('/tally/groups');
@@ -372,6 +394,13 @@ export async function resendGuestInviteAction(
     .set({ guestInviteStatus: status })
     .where(eq(groupMembers.id, memberId));
 
+  void sdk.activity.log({
+    action: 'group.guest_invite_resent',
+    targetType: 'group',
+    targetId: groupId,
+    summary: `Resent the invite email for guest ${member.guestName ?? 'Guest'}`,
+  });
+
   revalidatePath('/tally/groups');
   return status === 'sent'
     ? { ok: true, message: 'Invite email resent.' }
@@ -411,6 +440,14 @@ export async function removeMemberAction(groupId: string, memberId: string): Pro
 
   await db.update(groupMembers).set({ leftAt: now() }).where(eq(groupMembers.id, memberId));
 
+  void sdk.activity.log({
+    action: 'group.member_removed',
+    targetType: 'group',
+    targetId: groupId,
+    subjectUserId: member.kind === 'user' ? (member.userId ?? undefined) : undefined,
+    summary: `Removed a ${member.kind === 'guest' ? 'guest' : 'member'} from the group`,
+  });
+
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Member removed.' };
 }
@@ -447,6 +484,14 @@ export async function updateMemberRoleAction(
   }
 
   await db.update(groupMembers).set({ role }).where(eq(groupMembers.id, memberId));
+
+  void sdk.activity.log({
+    action: 'group.member_role_updated',
+    targetType: 'group',
+    targetId: groupId,
+    subjectUserId: member.userId ?? undefined,
+    summary: `Changed a member's role to ${role}`,
+  });
 
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Role updated.' };
@@ -492,6 +537,13 @@ export async function archiveGroupAction(groupId: string): Promise<ActionResult>
     .set({ archivedAt: now(), updatedAt: now() })
     .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
 
+  void sdk.activity.log({
+    action: 'group.closed',
+    targetType: 'group',
+    targetId: groupId,
+    summary: 'Closed the group',
+  });
+
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Group closed.' };
 }
@@ -534,6 +586,13 @@ export async function deleteGroupAction(groupId: string): Promise<ActionResult> 
     .delete(groupMembers)
     .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.tenantId, tenantId)));
   await db.delete(groups).where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+
+  void sdk.activity.log({
+    action: 'group.deleted',
+    targetType: 'group',
+    targetId: groupId,
+    summary: 'Deleted an empty group',
+  });
 
   revalidatePath('/tally/groups');
   return { ok: true, message: 'Group deleted.' };
