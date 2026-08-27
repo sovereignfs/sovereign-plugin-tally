@@ -1,0 +1,28 @@
+{
+  "name": "sovereign-plugin-tally",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "db:generate": "drizzle-kit generate --schema app/_db/schema.ts --out migrations/sqlite --dialect sqlite",
+    "db:generate:pg": "drizzle-kit generate --schema app/_db/schema.postgres.ts --out migrations/postgres --dialect postgresql"
+  },
+  "dependencies": {
+    "@sovereignfs/sdk": "workspace:*",
+    "@sovereignfs/ui": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@sovereignfs/tsconfig": "workspace:*",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "catalog:",
+    "vitest": "^4.1.8"
+  }
+}

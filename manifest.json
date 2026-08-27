@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "fs.sovereign.tally",
+  "name": "Tally",
+  "version": "0.1.0",
+  "description": "Split shared expenses with a group and track who owes whom.",
+  "type": "sovereign",
+  "runtime": "native",
+  "routePrefix": "/tally",
+  "shell": "default",
+  "shellConfig": {
+    "mobileFooter": false
+  },
+  "icon": "icon.svg",
+  "permissions": [
+    "auth:session",
+    "db:readWrite",
+    "storage:readWrite",
+    "notifications:send",
+    "activity:write",
+    "data:export",
+    "data:import",
+    "mailer:send",
+    "mailer:sendExternal"
+  ],
+  "capabilities": {
+    "group-view": { "description": "View a group's expenses and balances." },
+    "group-add-expense": {
+      "description": "Add/edit expenses and record settlements in a group."
+    },
+    "group-manage": {
+      "description": "Rename/delete a group, and add/remove its members."
+    }
+  },
+  "roles": {
+    "group-owner": {
+      "description": "Full control of a group.",
+      "capabilities": ["group-view", "group-add-expense", "group-manage"],
+      "scope": "resource"
+    },
+    "group-member": {
+      "description": "Regular group participant.",
+      "capabilities": ["group-view", "group-add-expense"],
+      "scope": "resource"
+    }
+  },
+  "repository": "https://github.com/sovereignfs/sovereign-tally",
+  "compatibility": {
+    "minPlatformVersion": "0.94.0"
+  }
+}

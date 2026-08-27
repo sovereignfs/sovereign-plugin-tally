@@ -1,0 +1,11 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-6);
+  padding: var(--sv-space-6);
+}
+
+.placeholder {
+  color: var(--sv-color-text-muted);
+  font-size: var(--sv-font-size-sm);
+}
