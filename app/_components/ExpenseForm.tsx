@@ -5,6 +5,7 @@ import {
   Button,
   CurrencyInput,
   Dialog,
+  FileDropzone,
   FormField,
   Input,
   MemberMultiSelect,
@@ -52,26 +53,34 @@ export function ExpenseForm({ groupId, defaultCurrency, members }: ExpenseFormPr
   const [amountCents, setAmountCents] = useState<number | null>(null);
   const [splitMethod, setSplitMethod] = useState<SplitMethod>('equal');
   const [payerMemberId, setPayerMemberId] = useState(members[0]?.memberId ?? '');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set(members.map((m) => m.memberId)));
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(members.map((m) => m.memberId)),
+  );
   const [weights, setWeights] = useState<Map<string, number>>(new Map());
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (state?.ok) {
       setOpen(false);
       setAmountCents(null);
       setWeights(new Map());
+      setReceiptFile(null);
     }
   }, [state]);
 
   const participantsJson = useMemo(() => {
     const order = members.filter((m) => selectedIds.has(m.memberId)).map((m) => m.memberId);
     if (splitMethod === 'amount') {
-      return JSON.stringify(order.map((memberId) => ({ memberId, amountCents: weights.get(memberId) ?? 0 })));
+      return JSON.stringify(
+        order.map((memberId) => ({ memberId, amountCents: weights.get(memberId) ?? 0 })),
+      );
     }
     if (splitMethod === 'equal') {
       return JSON.stringify(order.map((memberId) => ({ memberId })));
     }
-    return JSON.stringify(order.map((memberId) => ({ memberId, weight: weights.get(memberId) ?? 0 })));
+    return JSON.stringify(
+      order.map((memberId) => ({ memberId, weight: weights.get(memberId) ?? 0 })),
+    );
   }, [members, selectedIds, splitMethod, weights]);
 
   function toggleParticipant(memberId: string, checked: boolean) {
@@ -113,7 +122,12 @@ export function ExpenseForm({ groupId, defaultCurrency, members }: ExpenseFormPr
 
           <FormField label="Amount" required>
             {(field) => (
-              <CurrencyInput {...field} valueCents={amountCents} onValueChange={setAmountCents} required />
+              <CurrencyInput
+                {...field}
+                valueCents={amountCents}
+                onValueChange={setAmountCents}
+                required
+              />
             )}
           </FormField>
 
@@ -143,7 +157,13 @@ export function ExpenseForm({ groupId, defaultCurrency, members }: ExpenseFormPr
 
           <FormField label="Date" required>
             {(field) => (
-              <Input {...field} name="occurredOn" type="date" required defaultValue={todayIsoDate()} />
+              <Input
+                {...field}
+                name="occurredOn"
+                type="date"
+                required
+                defaultValue={todayIsoDate()}
+              />
             )}
           </FormField>
 
@@ -212,6 +232,23 @@ export function ExpenseForm({ groupId, defaultCurrency, members }: ExpenseFormPr
                   }
             }
           />
+
+          <FormField label="Receipt" hint="Optional — image only">
+            {() => (
+              <FileDropzone
+                name="receipt"
+                accept="image/*"
+                label={receiptFile ? receiptFile.name : 'Attach a receipt'}
+                hint={
+                  receiptFile
+                    ? `${(receiptFile.size / 1024).toFixed(0)} KB`
+                    : 'or drag and drop here'
+                }
+                onFileSelect={setReceiptFile}
+                ariaLabel="Attach a receipt image"
+              />
+            )}
+          </FormField>
 
           <div className={styles.actions}>
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>

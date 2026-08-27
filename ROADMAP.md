@@ -894,6 +894,102 @@ its import line grew past print-width — confirmed via filtered diff to be
 pure re-wrapping plus the intended icon addition, no logic changes)/`pnpm
 design:tokens:check`/`pnpm test` (36 tests) all clean.
 
+**2026-08-27 — Receipt image attach (Post-MVP item 10).** `sdk.storage`
+wiring per SPEC.md §8: an optional image upload on `ExpenseForm`, and a
+view-receipt link wherever an expense already renders — the shared
+`ActivityFeed` component, so both the group's own feed and a person's
+cross-group timeline get it identically with no extra plugin-side work.
+`expenses.receipt_storage_key` already existed in the schema from task 2,
+unused until now.
+
+- **Upload** (`createExpenseAction`, `expenses.ts`): `ExpenseForm` gained
+  a `FileDropzone` (`@sovereignfs/ui`, `name="receipt"`, `accept="image/*"`)
+  as the form's last field, matching `CONCEPT.md`'s own listed field order
+  (payer/date/category/note/receipt). Native `<form action={formAction}>`
+  submission carries the `File` straight through FormData — no separate
+  upload step or client-side fetch needed, `FileDropzone`'s own doc
+  comment confirms this is exactly the supported pattern. Server-side:
+  validates `file.type.startsWith('image/')` (CONCEPT.md's "manual image
+  attach only" v1 scope), then `sdk.storage.put()` keyed
+  `receipts/<expenseId>/<filename>` with **no `ownerUserId`** — a
+  deliberate, spec-mandated choice (SPEC.md §8): the object must be
+  plugin-scoped, not per-user-owned, since any active group member needs
+  to view a receipt someone else attached, not just its uploader.
+  Best-effort: an upload failure (bad type, over quota, etc.) surfaces as
+  a warning appended to the success message rather than failing the whole
+  expense — the split data the user just entered is the primary value,
+  not the attachment.
+- **View**: new `app/_lib/receipts.ts`'s `resolveReceiptUrls()` —
+  batch-generates a `sdk.storage.getSignedUrl()` link (1800s expiry,
+  regenerated fresh on every page load, never cached) per
+  receipt-bearing expense, shared by `groups.ts`'s per-group feed and
+  `people.ts`'s cross-group person feed rather than duplicating the
+  signed-URL-generation-plus-per-expense-error-handling logic in both
+  (this codebase's established "two real consumers → extract" bar).
+  `GroupActivityItem` (`activity.ts`) gained an optional `receiptUrl`
+  field; `ActivityFeed` renders a `file-text` icon link (opens in a new
+  tab) inline in the row's description when present.
+- **No new platform icon needed**: checked `packages/ui`'s curated Lucide
+  set before reaching for a dedicated "receipt" icon — `file-text` was
+  already available and reads perfectly well as "a document is attached
+  here." Requesting a new icon would have meant a separate platform-repo
+  branch + draft PR cycle (this plugin's own repo commits directly to
+  `main`, but `packages/ui` does not) for a single glyph a suitable
+  existing one already covers — deliberately avoided rather than taking
+  on unrequested cross-repo process for this task.
+
+**Live-verified end-to-end against the real running dev server + real
+database**, not just typecheck — including the one part of this task
+genuinely un-automatable through normal UI interaction: a native OS file
+picker cannot be driven by browser-automation clicks at all, in any
+environment. Injected a real 70-byte 1×1 PNG as a `File` into
+`FileDropzone`'s hidden `<input type="file">` via `DataTransfer` +
+a dispatched `change` event — exactly mirroring what `FileDropzone`'s own
+drop handler already does internally, so this exercises the identical
+code path a real drag-and-drop would.
+
+- Submitted the real form (`form.requestSubmit()`, after finding and
+  fixing a genuine gap in this session's own test setup, not a product
+  bug: the Description field still showed only its placeholder text, not
+  a real value, so the form's native validation correctly blocked
+  submission client-side with zero network activity — confirmed via
+  `form.checkValidity()` returning `false` before the fix and `true`
+  after).
+- Confirmed via direct DB query (isolated Tally namespace + the platform's
+  own `plugin_storage_objects` table) that the created expense's
+  `receipt_storage_key` and the storage object row match exactly, and
+  critically that `owner_user_id` is `NULL` — the plugin-scoped access
+  SPEC.md §8 requires, not silently defaulted to per-user.
+- Confirmed the rendered "View receipt" link's `href` is a real
+  `/api/storage/<token>` signed URL, and `fetch()`-ed it directly:
+  `200 OK`, `Content-Type: image/png` (preserved from upload), `Cache-
+  Control: private, no-store` (matching `docs/plugin-development.md`),
+  and exactly 70 bytes back — the literal round-tripped image, not just a
+  plausible-looking link.
+- Confirmed the same link (a fresh, independently-generated signed URL —
+  different token, same underlying object id) also renders correctly on
+  Dev Admin's own Person detail page, proving `people.ts`'s independent
+  `resolveReceiptUrls()` call site works identically to `groups.ts`'s, not
+  just copy-pasted and untested.
+
+Test expense and its storage object row removed afterward via a scratch,
+git-ignored DB script (`expenses`/`expense_payers`/`expense_splits`
+rows plus the matching `plugin_storage_objects` row) so this doesn't
+linger alongside the seeded dataset; re-confirmed via a fresh reload that
+"Roomies" is back to its exact original balance (`Owed USD 1632.93`) with
+no orphaned activity row. The physical 70-byte file under
+`data/plugins/fs.sovereign.tally/storage/` was not separately hunted down
+and deleted — raw-SQL-deleting the metadata row (rather than calling the
+real `sdk.storage.delete()`, not reachable from a standalone script
+outside a plugin request context) doesn't remove it, and a single
+throwaway 70-byte dev file is not worth a special-cased cleanup path.
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to touched files,
+including `ExpenseForm.tsx`'s/`expenses.ts`'s/others' necessary reformat
+once import lists grew past print-width — confirmed pure re-wrapping, no
+logic changes)/`pnpm design:tokens:check`/`pnpm test` (36 tests) all
+clean.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -938,7 +1034,8 @@ in priority order:
    dropped.
 9. ~~**New icons**~~ — ✅ shipped 2026-08-27 — `users`, `arrow-left-right`,
    `send` — see Status below — UI-FLOW.md §7.
-10. **Receipt image attach** — `sdk.storage` wiring per SPEC.md §8.
+10. ~~**Receipt image attach**~~ — ✅ shipped 2026-08-27 — `sdk.storage`
+    wiring per SPEC.md §8 — see Status below.
 
 ### Status — Overview (item 3)
 

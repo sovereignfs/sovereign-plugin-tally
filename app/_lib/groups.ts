@@ -31,6 +31,7 @@ import { getContext, now } from './context';
 import { fetchMyGroupsData } from './group-data';
 import { newId } from './ids';
 import { requireGroupMember } from './membership';
+import { resolveReceiptUrls } from './receipts';
 
 export type { ActionResult };
 export type { CurrencyAmount };
@@ -232,6 +233,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
       category: expenses.category,
       occurredOn: expenses.occurredOn,
       deletedAt: expenses.deletedAt,
+      receiptStorageKey: expenses.receiptStorageKey,
     })
     .from(expenses)
     .where(eq(expenses.groupId, groupId));
@@ -292,6 +294,10 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
   // always the only one.
   const payerMemberIdByExpenseId = new Map(groupPayers.map((p) => [p.expenseId, p.memberId]));
 
+  const receiptUrlByExpenseId = await resolveReceiptUrls(
+    activeExpenses.map((e) => ({ id: e.id, receiptStorageKey: e.receiptStorageKey })),
+  );
+
   const expenseActivity: GroupActivityItem[] = activeExpenses.map((e) => {
     const payerMemberId = payerMemberIdByExpenseId.get(e.id) ?? null;
     const payerLabel = (payerMemberId && labelByMemberId.get(payerMemberId)) ?? 'Someone';
@@ -310,6 +316,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
       note: null,
       amountCents: e.amountCents,
       currency: e.currency,
+      receiptUrl: receiptUrlByExpenseId.get(e.id) ?? null,
     };
   });
 

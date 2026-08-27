@@ -152,6 +152,31 @@ export async function createExpenseAction(
   const expenseId = newId();
   const timestamp = now();
 
+  // Receipt attach (SPEC.md §8) is optional and best-effort: a storage
+  // hiccup surfaces as a warning appended to the success message rather
+  // than failing the whole expense — the split data the user just entered
+  // is the primary value here, not the attachment.
+  let receiptStorageKey: string | null = null;
+  let receiptWarning: string | null = null;
+  const receiptFile = formData.get('receipt');
+  if (receiptFile instanceof File && receiptFile.size > 0) {
+    if (!receiptFile.type.startsWith('image/')) {
+      receiptWarning = 'Receipt not attached: only image files are supported.';
+    } else {
+      try {
+        const key = `receipts/${expenseId}/${receiptFile.name}`;
+        await sdk.storage.put({
+          key,
+          body: await receiptFile.arrayBuffer(),
+          contentType: receiptFile.type,
+        });
+        receiptStorageKey = key;
+      } catch (err) {
+        receiptWarning = `Receipt not attached: ${err instanceof Error ? err.message : 'upload failed'}.`;
+      }
+    }
+  }
+
   await db.insert(expenses).values({
     id: expenseId,
     groupId,
@@ -165,6 +190,7 @@ export async function createExpenseAction(
     createdByUserId: userId,
     createdAt: timestamp,
     updatedAt: timestamp,
+    receiptStorageKey,
   });
 
   await db.insert(expensePayers).values({
@@ -216,5 +242,10 @@ export async function createExpenseAction(
   }
 
   revalidatePath('/tally/groups');
-  return { ok: true, message: `Added "${description}".` };
+  return {
+    ok: true,
+    message: receiptWarning
+      ? `Added "${description}". ${receiptWarning}`
+      : `Added "${description}".`,
+  };
 }

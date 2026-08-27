@@ -17,6 +17,7 @@ import { CATEGORY_LABEL_BY_VALUE } from './categories';
 import { pushTo } from './collections';
 import { getContext } from './context';
 import { fetchMyGroupsData, type MemberRow } from './group-data';
+import { resolveReceiptUrls } from './receipts';
 
 /**
  * People (UI-FLOW.md §4) — everyone the current user shares at least one
@@ -49,14 +50,23 @@ export interface PeopleData {
   people: PersonListItem[];
 }
 
-function personKeyFor(groupId: string, member: { id: string; kind: string; userId: string | null }): string {
+function personKeyFor(
+  groupId: string,
+  member: { id: string; kind: string; userId: string | null },
+): string {
   return member.kind === 'user' && member.userId ? member.userId : `${groupId}:${member.id}`;
 }
 
 export async function getPeopleForUser(): Promise<PeopleData> {
   const { db, userId, tenantId } = await getContext();
-  const { myMemberships, membersByGroup, expensesByGroup, payersByGroup, splitsByGroup, settlementsByGroup } =
-    await fetchMyGroupsData(db, userId, tenantId);
+  const {
+    myMemberships,
+    membersByGroup,
+    expensesByGroup,
+    payersByGroup,
+    splitsByGroup,
+    settlementsByGroup,
+  } = await fetchMyGroupsData(db, userId, tenantId);
 
   if (myMemberships.length === 0) {
     return { hasGroups: false, owed: [], owe: [], people: [] };
@@ -80,7 +90,10 @@ export async function getPeopleForUser(): Promise<PeopleData> {
 
     const myBalances = netBalances.filter((b) => b.memberId === myMemberId && b.amountCents !== 0);
     for (const b of myBalances) {
-      myBalancesByCurrency.set(b.currency, (myBalancesByCurrency.get(b.currency) ?? 0) + b.amountCents);
+      myBalancesByCurrency.set(
+        b.currency,
+        (myBalancesByCurrency.get(b.currency) ?? 0) + b.amountCents,
+      );
     }
 
     for (const counterparty of resolveCounterparties(netBalances, myMemberId)) {
@@ -120,21 +133,26 @@ export async function getPeopleForUser(): Promise<PeopleData> {
         .map((m) => m.userId as string),
     ),
   );
-  const resolvedUsers = realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
+  const resolvedUsers =
+    realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
   const nameByUserId = new Map(resolvedUsers.map((u) => [u.id, u.name ?? u.email]));
 
-  const people: PersonListItem[] = Array.from(coMemberByPersonKey.entries()).map(([personKey, member]) => {
-    const balances = (balancesByPersonKey.get(personKey) ?? [])
-      .filter((b) => b.amountCents !== 0)
-      .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
-    return {
-      personKey,
-      label:
-        member.kind === 'user' ? (nameByUserId.get(member.userId ?? '') ?? 'Unknown member') : (member.guestName ?? 'Guest'),
-      sharedGroupCount: sharedGroupsByPersonKey.get(personKey)?.size ?? 0,
-      balances,
-    };
-  });
+  const people: PersonListItem[] = Array.from(coMemberByPersonKey.entries()).map(
+    ([personKey, member]) => {
+      const balances = (balancesByPersonKey.get(personKey) ?? [])
+        .filter((b) => b.amountCents !== 0)
+        .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+      return {
+        personKey,
+        label:
+          member.kind === 'user'
+            ? (nameByUserId.get(member.userId ?? '') ?? 'Unknown member')
+            : (member.guestName ?? 'Guest'),
+        sharedGroupCount: sharedGroupsByPersonKey.get(personKey)?.size ?? 0,
+        balances,
+      };
+    },
+  );
 
   people.sort((a, b) => {
     const aMag = a.balances.length > 0 ? Math.abs(largestMagnitude(a.balances).amountCents) : 0;
@@ -176,8 +194,14 @@ export interface PersonDetail {
  */
 export async function getPersonDetail(personKey: string): Promise<PersonDetail | null> {
   const { db, userId, tenantId } = await getContext();
-  const { myMemberships, membersByGroup, expensesByGroup, payersByGroup, splitsByGroup, settlementsByGroup } =
-    await fetchMyGroupsData(db, userId, tenantId);
+  const {
+    myMemberships,
+    membersByGroup,
+    expensesByGroup,
+    payersByGroup,
+    splitsByGroup,
+    settlementsByGroup,
+  } = await fetchMyGroupsData(db, userId, tenantId);
 
   if (myMemberships.length === 0) return null;
 
@@ -205,9 +229,12 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
   const sharedGroupIds = Array.from(targetMemberIdByGroup.keys());
   const relevantMembers = sharedGroupIds.flatMap((groupId) => membersByGroup.get(groupId) ?? []);
   const realUserIds = Array.from(
-    new Set(relevantMembers.filter((m) => m.kind === 'user' && m.userId).map((m) => m.userId as string)),
+    new Set(
+      relevantMembers.filter((m) => m.kind === 'user' && m.userId).map((m) => m.userId as string),
+    ),
   );
-  const resolvedUsers = realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
+  const resolvedUsers =
+    realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
   const nameByUserId = new Map(resolvedUsers.map((u) => [u.id, u.name ?? u.email]));
   function labelForMember(member: MemberRow): string {
     if (member.kind === 'user') return nameByUserId.get(member.userId ?? '') ?? 'Unknown member';
@@ -219,6 +246,7 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
 
   const balancesByCurrency = new Map<string, number>();
   const allActivity: GroupActivityItem[] = [];
+  const receiptKeyByExpenseId = new Map<string, string | null>();
 
   for (const [groupId, targetMemberId] of targetMemberIdByGroup) {
     const myMemberId = myMemberIdByGroup.get(groupId);
@@ -263,9 +291,11 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
     for (const e of groupExpenses) {
       if (e.deletedAt) continue;
       const participants = participantsByExpenseId.get(e.id);
-      if (!participants || !participants.has(myMemberId) || !participants.has(targetMemberId)) continue;
+      if (!participants || !participants.has(myMemberId) || !participants.has(targetMemberId))
+        continue;
       const payerMemberId = payerMemberIdByExpenseId.get(e.id) ?? null;
       const payerLabel = (payerMemberId && labelByMemberId.get(payerMemberId)) ?? 'Someone';
+      receiptKeyByExpenseId.set(e.id, e.receiptStorageKey);
       allActivity.push({
         id: e.id,
         type: 'expense',
@@ -310,6 +340,13 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
         groupName: membership.name,
       });
     }
+  }
+
+  const receiptUrlByExpenseId = await resolveReceiptUrls(
+    Array.from(receiptKeyByExpenseId, ([id, receiptStorageKey]) => ({ id, receiptStorageKey })),
+  );
+  for (const item of allActivity) {
+    if (item.type === 'expense') item.receiptUrl = receiptUrlByExpenseId.get(item.id) ?? null;
   }
 
   const balances: CurrencyAmount[] = Array.from(balancesByCurrency.entries())

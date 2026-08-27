@@ -1,3 +1,4 @@
+import { Icon } from '@sovereignfs/ui';
 import { formatActivityDate, formatMoney, type GroupActivityMonth } from '../_lib/activity';
 import styles from './ActivityFeed.module.css';
 
@@ -35,10 +36,25 @@ export function ActivityFeed({
                     {item.categoryLabel}
                     {showGroupName && item.groupName ? ` · ${item.groupName}` : ''}
                   </span>
-                  <span className={styles.description}>{item.description}</span>
+                  <span className={styles.description}>
+                    {item.description}
+                    {item.receiptUrl && (
+                      <a
+                        href={item.receiptUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={styles.receiptLink}
+                        aria-label="View receipt"
+                      >
+                        <Icon name="file-text" size="sm" aria-hidden />
+                      </a>
+                    )}
+                  </span>
                   {item.note && <span className={styles.note}>{item.note}</span>}
                 </span>
-                <span className={styles.amount}>{formatMoney(item.amountCents, item.currency)}</span>
+                <span className={styles.amount}>
+                  {formatMoney(item.amountCents, item.currency)}
+                </span>
               </li>
             ))}
           </ul>

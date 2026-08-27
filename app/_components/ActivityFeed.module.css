@@ -54,7 +54,19 @@
 }
 
 .description {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-primary);
+}
+
+.receiptLink {
+  display: inline-flex;
+  color: var(--sv-color-text-muted);
+}
+
+.receiptLink:hover {
   color: var(--sv-color-text-primary);
 }
 

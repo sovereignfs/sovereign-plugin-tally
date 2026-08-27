@@ -1,5 +1,12 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { expensePayers, expenseSplits, expenses, groupMembers, groups, settlements } from '../_db/schema';
+import {
+  expensePayers,
+  expenseSplits,
+  expenses,
+  groupMembers,
+  groups,
+  settlements,
+} from '../_db/schema';
 import { pushTo } from './collections';
 import type { Db } from './context';
 
@@ -35,6 +42,7 @@ export interface ExpenseRow {
   category: string | null;
   occurredOn: number;
   deletedAt: number | null;
+  receiptStorageKey: string | null;
 }
 
 export interface PayerRow {
@@ -79,7 +87,11 @@ const EMPTY_DATA: MyGroupsData = {
   settlementsByGroup: new Map(),
 };
 
-export async function fetchMyGroupsData(db: Db, userId: string, tenantId: string): Promise<MyGroupsData> {
+export async function fetchMyGroupsData(
+  db: Db,
+  userId: string,
+  tenantId: string,
+): Promise<MyGroupsData> {
   const myMemberships = await db
     .select({
       groupId: groupMembers.groupId,
@@ -119,6 +131,7 @@ export async function fetchMyGroupsData(db: Db, userId: string, tenantId: string
       category: expenses.category,
       occurredOn: expenses.occurredOn,
       deletedAt: expenses.deletedAt,
+      receiptStorageKey: expenses.receiptStorageKey,
     })
     .from(expenses)
     .where(inArray(expenses.groupId, groupIds));
@@ -187,5 +200,12 @@ export async function fetchMyGroupsData(db: Db, userId: string, tenantId: string
     pushTo(settlementsByGroup, s.groupId, s);
   }
 
-  return { myMemberships, membersByGroup, expensesByGroup, payersByGroup, splitsByGroup, settlementsByGroup };
+  return {
+    myMemberships,
+    membersByGroup,
+    expensesByGroup,
+    payersByGroup,
+    splitsByGroup,
+    settlementsByGroup,
+  };
 }

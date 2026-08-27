@@ -139,6 +139,11 @@ export interface GroupActivityItem {
    *  a *person's* cross-group timeline (`people.ts`) where it's shared
    *  across every group in common, so each row needs to say which one. */
   groupName?: string;
+  /** A short-lived `sdk.storage.getSignedUrl()` link to an expense's
+   *  attached receipt image (SPEC.md §8) — generated fresh per page load,
+   *  never cached. `null`/unset for a settlement row or an expense with no
+   *  receipt attached. */
+  receiptUrl?: string | null;
 }
 
 export interface GroupActivityMonth {
@@ -162,5 +167,9 @@ export function groupActivityByMonth(items: GroupActivityItem[]): GroupActivityM
   }
   return Array.from(byMonth.entries())
     .sort(([a], [b]) => b.localeCompare(a))
-    .map(([monthKey, monthItems]) => ({ monthKey, monthLabel: monthLabelFor(monthKey), items: monthItems }));
+    .map(([monthKey, monthItems]) => ({
+      monthKey,
+      monthLabel: monthLabelFor(monthKey),
+      items: monthItems,
+    }));
 }
