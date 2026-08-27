@@ -2,7 +2,10 @@ import Link from 'next/link';
 import { BalanceChip, Icon } from '@sovereignfs/ui';
 import { getGroupDetail } from '../../../_lib/groups';
 import { groupBalancesByCurrency, simplifyDebts } from '../../../_lib/balances';
+import { ActivityFeed } from '../../../_components/ActivityFeed';
+import { BalanceChipStack } from '../../../_components/BalanceChipStack';
 import { ExpenseForm } from '../../../_components/ExpenseForm';
+import { RecordSettlementDialog } from '../../../_components/RecordSettlementDialog';
 import { SettleUpButton } from '../../../_components/SettleUpButton';
 import styles from './page.module.css';
 
@@ -13,9 +16,10 @@ import styles from './page.module.css';
  * `searchParams` the main `groups/page.tsx` reads — both are independent
  * pages matching the identical URL, not a parent/child pair.
  *
- * Full Balances/Activity/Analytics tabs (UI-FLOW.md §4) are a follow-up —
- * this ships Balances + a plain expense list, the slice ROADMAP.md tasks
- * 6–7 scope to.
+ * Activity feed (grouped by month, merged expenses + settlements) added
+ * 2026-08-27 in place of the earlier flat "Expenses" list, alongside a
+ * balance-summary headline and a general `RecordSettlementDialog` CTA —
+ * requested directly against a Splitwise reference screenshot.
  */
 export default async function GroupDetailSlot({
   searchParams,
@@ -30,6 +34,7 @@ export default async function GroupDetailSlot({
 
   const balancesByCurrency = groupBalancesByCurrency(group.balances);
   const labelByMemberId = new Map(group.members.map((m) => [m.memberId, m.label]));
+  const memberOptions = group.members.map((m) => ({ memberId: m.memberId, label: m.label }));
 
   return (
     <div className={styles.detail}>
@@ -40,11 +45,25 @@ export default async function GroupDetailSlot({
         </Link>
       </div>
 
-      <ExpenseForm
-        groupId={group.id}
-        defaultCurrency={group.defaultCurrency}
-        members={group.members.map((m) => ({ memberId: m.memberId, label: m.label }))}
-      />
+      <div className={styles.actionsRow}>
+        <ExpenseForm groupId={group.id} defaultCurrency={group.defaultCurrency} members={memberOptions} />
+        <RecordSettlementDialog
+          groupId={group.id}
+          defaultCurrency={group.defaultCurrency}
+          members={memberOptions}
+        />
+      </div>
+
+      <div className={styles.section}>
+        <h3 className={styles.sectionHeading}>Balance summary</h3>
+        {group.myBalances.length === 0 ? (
+          <p className={styles.placeholder}>You&rsquo;re settled up in this group.</p>
+        ) : (
+          <div className={styles.summaryStack}>
+            <BalanceChipStack balances={group.myBalances} align="start" />
+          </div>
+        )}
+      </div>
 
       <div className={styles.section}>
         <h3 className={styles.sectionHeading}>Balances</h3>
@@ -72,21 +91,8 @@ export default async function GroupDetailSlot({
       </div>
 
       <div className={styles.section}>
-        <h3 className={styles.sectionHeading}>Expenses</h3>
-        {group.recentExpenses.length === 0 ? (
-          <p className={styles.placeholder}>No expenses yet.</p>
-        ) : (
-          <ul className={styles.suggestionList}>
-            {group.recentExpenses.map((expense) => (
-              <li key={expense.id} className={styles.suggestionRow}>
-                <span>{expense.description}</span>
-                <span className={styles.suggestionAmount}>
-                  {expense.currency} {(expense.amountCents / 100).toFixed(2)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        <h3 className={styles.sectionHeading}>Activity</h3>
+        <ActivityFeed months={group.activity} />
       </div>
 
       {Array.from(balancesByCurrency.entries()).map(([currency, balances]) => {

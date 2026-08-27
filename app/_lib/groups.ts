@@ -11,43 +11,121 @@ import {
   groups,
   settlements,
 } from '../_db/schema';
-import { computeNetBalances, type NetBalance } from './balances';
+import {
+  describeExpenseActivity,
+  describeSettlementActivity,
+  groupActivityByMonth,
+  type GroupActivityItem,
+  type GroupActivityMonth,
+} from './activity';
+import { computeNetBalances, resolveCounterparties, type CurrencyAmount, type NetBalance } from './balances';
+import { CATEGORY_LABEL_BY_VALUE } from './categories';
+import { pushTo } from './collections';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
+import { fetchMyGroupsData } from './group-data';
 import { newId } from './ids';
 import { requireGroupMember } from './membership';
 
 export type { ActionResult };
+export type { CurrencyAmount };
+
+export interface GroupCounterpartyView {
+  memberId: string;
+  label: string;
+  currency: string;
+  amountCents: number;
+}
 
 export interface GroupListItem {
   id: string;
   name: string;
   defaultCurrency: string;
   archivedAt: number | null;
+  memberCount: number;
+  /** My own balance(s) in this group — empty means settled up. One entry
+   *  per currency, sorted by |amount| descending (never blended — SPEC.md
+   *  §4; see `overview.ts`'s `OverviewGroupItem` for why this can't
+   *  collapse to a single dominant entry). */
+  myBalances: CurrencyAmount[];
+  /** Other members with a non-zero balance relative to me, sorted by
+   *  |amount| descending — the per-group "who's not settled up" preview
+   *  (Splitwise's own Groups list shows the same thing per group tile). */
+  counterparties: GroupCounterpartyView[];
 }
 
-/** Groups the current user is an active member of (SPEC.md §9's group list). */
+/**
+ * Groups the current user is an active member of, each with their own
+ * balance and a preview of which other members aren't settled up with
+ * them (SPEC.md §9's group list). Same per-group `computeNetBalances` +
+ * `resolveCounterparties` pipeline `overview.ts`'s `getOverviewData` uses,
+ * just not rolled up across groups.
+ */
 export async function listGroupsForUser(): Promise<GroupListItem[]> {
   const { db, userId, tenantId } = await getContext();
-  return db
-    .select({
-      id: groups.id,
-      name: groups.name,
-      defaultCurrency: groups.defaultCurrency,
-      archivedAt: groups.archivedAt,
-    })
-    .from(groups)
-    .innerJoin(
-      groupMembers,
-      and(
-        eq(groupMembers.groupId, groups.id),
-        eq(groupMembers.userId, userId),
-        eq(groupMembers.tenantId, tenantId),
-        eq(groupMembers.kind, 'user'),
-        isNull(groupMembers.leftAt),
-      ),
-    )
-    .where(eq(groups.tenantId, tenantId));
+  const { myMemberships, membersByGroup, expensesByGroup, payersByGroup, splitsByGroup, settlementsByGroup } =
+    await fetchMyGroupsData(db, userId, tenantId);
+
+  if (myMemberships.length === 0) return [];
+
+  const myBalancesByGroup = new Map<string, CurrencyAmount[]>();
+  const rawCounterpartiesByGroup = new Map<
+    string,
+    { memberId: string; currency: string; amountCents: number }[]
+  >();
+  const realUserIds = new Set<string>();
+
+  for (const membership of myMemberships) {
+    const { groupId, myMemberId } = membership;
+    const groupMembersList = membersByGroup.get(groupId) ?? [];
+
+    const netBalances = computeNetBalances({
+      expenses: expensesByGroup.get(groupId) ?? [],
+      payers: payersByGroup.get(groupId) ?? [],
+      splits: splitsByGroup.get(groupId) ?? [],
+      settlements: settlementsByGroup.get(groupId) ?? [],
+    });
+
+    const myBalances = netBalances
+      .filter((b) => b.memberId === myMemberId && b.amountCents !== 0)
+      .map((b) => ({ currency: b.currency, amountCents: b.amountCents }))
+      .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+    myBalancesByGroup.set(groupId, myBalances);
+
+    for (const counterparty of resolveCounterparties(netBalances, myMemberId)) {
+      pushTo(rawCounterpartiesByGroup, groupId, counterparty);
+      const member = groupMembersList.find((m) => m.id === counterparty.memberId);
+      if (member?.kind === 'user' && member.userId) realUserIds.add(member.userId);
+    }
+  }
+
+  const resolvedUsers =
+    realUserIds.size > 0 ? await sdk.directory.resolveUsers({ ids: Array.from(realUserIds) }) : [];
+  const nameByUserId = new Map(resolvedUsers.map((u) => [u.id, u.name ?? u.email]));
+
+  function labelForMember(groupId: string, memberId: string): string {
+    const member = (membersByGroup.get(groupId) ?? []).find((m) => m.id === memberId);
+    if (!member) return 'Unknown member';
+    if (member.kind === 'user' && member.userId) return nameByUserId.get(member.userId) ?? 'Unknown member';
+    return member.guestName ?? 'Guest';
+  }
+
+  return myMemberships.map((m) => ({
+    id: m.groupId,
+    name: m.name,
+    defaultCurrency: m.defaultCurrency,
+    archivedAt: m.archivedAt,
+    memberCount: (membersByGroup.get(m.groupId) ?? []).length,
+    myBalances: myBalancesByGroup.get(m.groupId) ?? [],
+    counterparties: (rawCounterpartiesByGroup.get(m.groupId) ?? [])
+      .map((c) => ({
+        memberId: c.memberId,
+        label: labelForMember(m.groupId, c.memberId),
+        currency: c.currency,
+        amountCents: c.amountCents,
+      }))
+      .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents)),
+  }));
 }
 
 export interface GroupMemberView {
@@ -57,14 +135,6 @@ export interface GroupMemberView {
   kind: 'user' | 'guest';
 }
 
-export interface GroupExpenseListItem {
-  id: string;
-  description: string;
-  amountCents: number;
-  currency: string;
-  occurredOn: number;
-}
-
 export interface GroupDetail {
   id: string;
   name: string;
@@ -72,7 +142,13 @@ export interface GroupDetail {
   defaultCurrency: string;
   members: GroupMemberView[];
   balances: NetBalance[];
-  recentExpenses: GroupExpenseListItem[];
+  /** My own balance summary for this group, one entry per currency (see
+   *  `overview.ts`'s `OverviewGroupItem` for why this can't collapse to a
+   *  single dominant entry). */
+  myBalances: CurrencyAmount[];
+  /** Month-grouped, described, merged expense + settlement timeline
+   *  (UI-FLOW.md §4). */
+  activity: GroupActivityMonth[];
 }
 
 /**
@@ -120,6 +196,8 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     role: m.role === 'owner' ? 'owner' : 'member',
     kind: m.kind === 'guest' ? 'guest' : 'user',
   }));
+  const labelByMemberId = new Map(memberViews.map((m) => [m.memberId, m.label]));
+  const myMemberId = members.find((m) => m.kind === 'user' && m.userId === userId)?.id ?? null;
 
   const groupExpenses = await db
     .select({
@@ -127,6 +205,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
       description: expenses.description,
       amountCents: expenses.amountCents,
       currency: expenses.currency,
+      category: expenses.category,
       occurredOn: expenses.occurredOn,
       deletedAt: expenses.deletedAt,
     })
@@ -158,15 +237,19 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
       : Promise.resolve([]),
     db
       .select({
+        id: settlements.id,
         fromMemberId: settlements.fromMemberId,
         toMemberId: settlements.toMemberId,
         amountCents: settlements.amountCents,
         currency: settlements.currency,
+        note: settlements.note,
+        settledOn: settlements.settledOn,
         deletedAt: settlements.deletedAt,
       })
       .from(settlements)
       .where(eq(settlements.groupId, groupId)),
   ]);
+  const activeSettlements = groupSettlements.filter((s) => !s.deletedAt);
 
   const balances = computeNetBalances({
     expenses: groupExpenses,
@@ -174,17 +257,59 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     splits: groupSplits,
     settlements: groupSettlements,
   });
+  const myBalances: CurrencyAmount[] = myMemberId
+    ? balances
+        .filter((b) => b.memberId === myMemberId && b.amountCents !== 0)
+        .map((b) => ({ currency: b.currency, amountCents: b.amountCents }))
+        .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents))
+    : [];
 
-  const recentExpenses: GroupExpenseListItem[] = activeExpenses
-    .slice()
-    .sort((a, b) => b.occurredOn - a.occurredOn)
-    .map((e) => ({
+  // Single payer per expense in v1 (SPEC.md §3) — the first payer row is
+  // always the only one.
+  const payerMemberIdByExpenseId = new Map(groupPayers.map((p) => [p.expenseId, p.memberId]));
+
+  const expenseActivity: GroupActivityItem[] = activeExpenses.map((e) => {
+    const payerMemberId = payerMemberIdByExpenseId.get(e.id) ?? null;
+    const payerLabel = (payerMemberId && labelByMemberId.get(payerMemberId)) ?? 'Someone';
+    return {
       id: e.id,
-      description: e.description,
+      type: 'expense',
+      occurredOn: e.occurredOn,
+      categoryLabel: (e.category && CATEGORY_LABEL_BY_VALUE.get(e.category)) ?? 'General',
+      description: describeExpenseActivity({
+        payerLabel,
+        isPayerMe: payerMemberId === myMemberId,
+        amountCents: e.amountCents,
+        currency: e.currency,
+        description: e.description,
+      }),
+      note: null,
       amountCents: e.amountCents,
       currency: e.currency,
-      occurredOn: e.occurredOn,
-    }));
+    };
+  });
+
+  const settlementActivity: GroupActivityItem[] = activeSettlements.map((s) => ({
+    id: s.id,
+    type: 'settlement',
+    occurredOn: s.settledOn,
+    categoryLabel: 'Settlement',
+    description: describeSettlementActivity({
+      fromLabel: labelByMemberId.get(s.fromMemberId) ?? 'Someone',
+      isFromMe: s.fromMemberId === myMemberId,
+      toLabel: labelByMemberId.get(s.toMemberId) ?? 'someone',
+      isToMe: s.toMemberId === myMemberId,
+      amountCents: s.amountCents,
+      currency: s.currency,
+    }),
+    note: s.note,
+    amountCents: s.amountCents,
+    currency: s.currency,
+  }));
+
+  const activity = groupActivityByMonth(
+    [...expenseActivity, ...settlementActivity].sort((a, b) => b.occurredOn - a.occurredOn),
+  );
 
   return {
     id: group.id,
@@ -193,7 +318,8 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     defaultCurrency: group.defaultCurrency,
     members: memberViews,
     balances,
-    recentExpenses,
+    myBalances,
+    activity,
   };
 }
 
@@ -210,6 +336,7 @@ export async function createGroupAction(
   const defaultCurrency = String(formData.get('defaultCurrency') ?? '')
     .trim()
     .toUpperCase();
+  const descriptionInput = String(formData.get('description') ?? '').trim();
 
   if (!name) return { ok: false, error: 'Enter a group name.' };
   if (!CURRENCY_CODE_RE.test(defaultCurrency)) return { ok: false, error: 'Choose a currency.' };
@@ -221,6 +348,7 @@ export async function createGroupAction(
     id: groupId,
     tenantId,
     name,
+    description: descriptionInput || null,
     defaultCurrency,
     createdByUserId: userId,
     createdAt: timestamp,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
-import { Button, Dialog, FormField, Input, Select } from '@sovereignfs/ui';
+import { Button, Dialog, FormField, Input, Select, Textarea } from '@sovereignfs/ui';
 import { createGroupAction, type ActionResult } from '../_lib/groups';
 import { CURRENCY_OPTIONS, DEFAULT_CURRENCY } from '../_lib/currencies';
 import styles from './DialogForm.module.css';
@@ -12,7 +12,7 @@ import styles from './DialogForm.module.css';
  * plugin's own `SPEC.md` §9 originally sketched. Corrected to match once
  * the real, validated sibling-plugin pattern was checked directly.
  */
-export function CreateGroupDialog() {
+export function CreateGroupDialog({ defaultCurrency = DEFAULT_CURRENCY }: { defaultCurrency?: string }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     createGroupAction,
@@ -38,9 +38,14 @@ export function CreateGroupDialog() {
           <FormField label="Name" required>
             {(field) => <Input {...field} name="name" required placeholder="Roomies" />}
           </FormField>
+          <FormField label="Description" hint="Optional">
+            {(field) => (
+              <Textarea {...field} name="description" rows={2} placeholder="Shared apartment expenses" />
+            )}
+          </FormField>
           <FormField label="Default currency" required>
             {(field) => (
-              <Select {...field} name="defaultCurrency" defaultValue={DEFAULT_CURRENCY}>
+              <Select {...field} name="defaultCurrency" defaultValue={defaultCurrency}>
                 {CURRENCY_OPTIONS.map((option) => (
                   <option key={option.code} value={option.code}>
                     {option.label}

@@ -1,0 +1,16 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sv-space-1);
+  flex-shrink: 0;
+}
+
+.alignStart {
+  align-items: flex-start;
+}
+
+.overflow {
+  color: var(--sv-color-text-muted);
+  font-size: var(--sv-font-size-xs);
+}

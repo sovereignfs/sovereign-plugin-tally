@@ -1,0 +1,42 @@
+.lineLg {
+  font-size: var(--sv-font-size-2xl);
+  font-weight: var(--sv-font-weight-semibold);
+  color: var(--sv-color-text-primary);
+  margin: 0;
+}
+
+.lineLg + .lineLg {
+  font-size: var(--sv-font-size-md);
+  margin-top: var(--sv-space-1);
+}
+
+.lineSm {
+  font-size: var(--sv-font-size-md);
+  font-weight: var(--sv-font-weight-semibold);
+  color: var(--sv-color-text-primary);
+  margin: 0;
+}
+
+.lineSm + .lineSm {
+  font-size: var(--sv-font-size-sm);
+  margin-top: var(--sv-space-1);
+}
+
+.toneSuccess {
+  color: var(--sv-color-success-text);
+}
+
+.toneDanger {
+  color: var(--sv-color-error-text);
+}
+
+.empty {
+  color: var(--sv-color-text-muted);
+  margin: 0;
+}
+
+.overflow {
+  color: var(--sv-color-text-muted);
+  font-size: var(--sv-font-size-xs);
+  margin: var(--sv-space-1) 0 0;
+}

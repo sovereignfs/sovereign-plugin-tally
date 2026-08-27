@@ -31,20 +31,10 @@
   color: var(--sv-color-text-primary);
 }
 
-.actionsRow {
-  display: flex;
-  gap: var(--sv-space-2);
-}
-
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-2);
-}
-
-.summaryStack {
-  display: flex;
-  align-items: flex-start;
 }
 
 .sectionHeading {
@@ -62,43 +52,8 @@
   margin: 0;
 }
 
-.memberList,
-.suggestionList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-2);
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.memberRow,
-.suggestionRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sv-space-3);
-  padding: var(--sv-space-2) 0;
-}
-
-.memberName {
-  display: flex;
-  align-items: center;
-  gap: var(--sv-space-2);
-  font-size: var(--sv-font-size-sm);
-  color: var(--sv-color-text-primary);
-}
-
-.ownerTag {
-  font-size: var(--sv-font-size-xs);
+.sharedGroups {
   color: var(--sv-color-text-muted);
-  border: 1px solid var(--sv-color-border);
-  border-radius: var(--sv-radius-sm);
-  padding: 0 var(--sv-space-1);
-}
-
-.suggestionAmount {
-  font-size: var(--sv-font-size-sm);
-  font-weight: 600;
-  color: var(--sv-color-text-primary);
+  font-size: var(--sv-font-size-xs);
+  margin: 0;
 }

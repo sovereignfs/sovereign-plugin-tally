@@ -32,6 +32,7 @@ export async function recordSettlementAction(
     .trim()
     .toUpperCase();
   const note = String(formData.get('note') ?? '').trim() || null;
+  const settledOnDate = String(formData.get('settledOn') ?? '');
 
   if (!groupId) return { ok: false, error: 'Missing group.' };
   await requireGroupMember(db, tenantId, userId, groupId);
@@ -39,6 +40,13 @@ export async function recordSettlementAction(
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
     return { ok: false, error: 'Enter a valid amount.' };
   }
+  // Absent for `SettleUpButton`'s hidden-field form (always "now"); present
+  // and user-editable for `RecordSettlementDialog`'s general form, so a
+  // payment that happened earlier can be backdated (SPEC.md §3 —
+  // `settledOn` is "when the real-world payment happened", distinct from
+  // `createdAt`).
+  const settledOn = settledOnDate ? Math.floor(new Date(settledOnDate).getTime() / 1000) : now();
+  if (!Number.isFinite(settledOn)) return { ok: false, error: 'Enter a valid date.' };
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: 'Choose a currency.' };
   if (!fromMemberId || !toMemberId || fromMemberId === toMemberId) {
     return { ok: false, error: 'Choose who paid and who received it.' };
@@ -68,7 +76,7 @@ export async function recordSettlementAction(
     amountCents,
     currency,
     note,
-    settledOn: now(),
+    settledOn,
     createdByUserId: userId,
     createdAt: now(),
   });

@@ -3,5 +3,5 @@
   "compilerOptions": {
     "baseUrl": "."
   },
-  "include": ["css-modules.d.ts", "app/**/*.ts", "app/**/*.tsx"]
+  "include": ["css-modules.d.ts", "app/**/*.ts", "app/**/*.tsx", "scripts/**/*.ts"]
 }
