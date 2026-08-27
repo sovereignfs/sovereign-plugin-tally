@@ -144,16 +144,27 @@ async function main(): Promise<void> {
       .where(inArray(schema.expenses.groupId, groupIds));
     const expenseIds = expenseRows.map((e) => e.id);
     if (expenseIds.length > 0) {
-      await db.delete(schema.expensePayers).where(inArray(schema.expensePayers.expenseId, expenseIds));
-      await db.delete(schema.expenseSplits).where(inArray(schema.expenseSplits.expenseId, expenseIds));
+      await db
+        .delete(schema.expensePayers)
+        .where(inArray(schema.expensePayers.expenseId, expenseIds));
+      await db
+        .delete(schema.expenseSplits)
+        .where(inArray(schema.expenseSplits.expenseId, expenseIds));
     }
     await db.delete(schema.expenses).where(inArray(schema.expenses.groupId, groupIds));
     await db.delete(schema.settlements).where(inArray(schema.settlements.groupId, groupIds));
+    // References group_members (fromMemberId/toMemberId) — must go before
+    // that delete, same reason expense_payers/expense_splits go before
+    // expenses above (Inbox's `[Remind]` action, added 2026-08-27).
+    await db.delete(schema.reminders).where(inArray(schema.reminders.groupId, groupIds));
     await db.delete(schema.groupMembers).where(inArray(schema.groupMembers.groupId, groupIds));
     await db.delete(schema.groups).where(inArray(schema.groups.id, groupIds));
   }
 
-  const existing = await db.select({ id: schema.groups.id }).from(schema.groups).where(eq(schema.groups.id, GROUP_ROOMIES));
+  const existing = await db
+    .select({ id: schema.groups.id })
+    .from(schema.groups)
+    .where(eq(schema.groups.id, GROUP_ROOMIES));
   if (existing.length > 0) {
     console.log('Seed data already present (group "Roomies" exists) — nothing to do.');
     console.log('Run again with --reset to wipe and recreate it.');
@@ -184,10 +195,42 @@ async function main(): Promise<void> {
   const rUser = 'seed-member-r-user';
   const rAuditor = 'seed-member-r-auditor';
   await db.insert(schema.groupMembers).values([
-    { id: rOwner, groupId: GROUP_ROOMIES, tenantId: TENANT_ID, kind: 'user', userId: users.owner.id, role: 'owner', joinedAt: daysAgo(30) },
-    { id: rAdmin, groupId: GROUP_ROOMIES, tenantId: TENANT_ID, kind: 'user', userId: users.admin.id, role: 'member', joinedAt: daysAgo(30) },
-    { id: rUser, groupId: GROUP_ROOMIES, tenantId: TENANT_ID, kind: 'user', userId: users.member.id, role: 'member', joinedAt: daysAgo(30) },
-    { id: rAuditor, groupId: GROUP_ROOMIES, tenantId: TENANT_ID, kind: 'user', userId: users.auditor.id, role: 'member', joinedAt: daysAgo(30) },
+    {
+      id: rOwner,
+      groupId: GROUP_ROOMIES,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.owner.id,
+      role: 'owner',
+      joinedAt: daysAgo(30),
+    },
+    {
+      id: rAdmin,
+      groupId: GROUP_ROOMIES,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.admin.id,
+      role: 'member',
+      joinedAt: daysAgo(30),
+    },
+    {
+      id: rUser,
+      groupId: GROUP_ROOMIES,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.member.id,
+      role: 'member',
+      joinedAt: daysAgo(30),
+    },
+    {
+      id: rAuditor,
+      groupId: GROUP_ROOMIES,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.auditor.id,
+      role: 'member',
+      joinedAt: daysAgo(30),
+    },
   ]);
   const rAll = [rOwner, rAdmin, rUser, rAuditor];
 
@@ -224,7 +267,12 @@ async function main(): Promise<void> {
       updatedAt: input.occurredOn,
     });
     await db.insert(schema.expensePayers).values(
-      input.payers.map((p) => ({ id: seedId('payer'), expenseId: input.id, memberId: p.memberId, amountCents: p.amountCents })),
+      input.payers.map((p) => ({
+        id: seedId('payer'),
+        expenseId: input.id,
+        memberId: p.memberId,
+        amountCents: p.amountCents,
+      })),
     );
 
     const split = input.split;
@@ -234,20 +282,27 @@ async function main(): Promise<void> {
       const amounts = split.amounts;
       resolved = new Map(Object.entries(amounts));
       const sum = [...resolved.values()].reduce((a, b) => a + b, 0);
-      if (sum !== input.amountCents) throw new Error(`${input.description}: amount split sums to ${sum}, expected ${input.amountCents}`);
+      if (sum !== input.amountCents)
+        throw new Error(
+          `${input.description}: amount split sums to ${sum}, expected ${input.amountCents}`,
+        );
     } else if (split.method === 'equal') {
       resolved = distributeEvenly(input.amountCents, split.participants);
     } else if (split.method === 'percentage') {
       const rawWeights = new Map(Object.entries(split.weights));
       const order = [...rawWeights.keys()];
-      const basisPoints = new Map(order.map((m) => [m, Math.round((rawWeights.get(m) ?? 0) * 100)]));
+      const basisPoints = new Map(
+        order.map((m) => [m, Math.round((rawWeights.get(m) ?? 0) * 100)]),
+      );
       resolved = distributeByWeights(input.amountCents, basisPoints, order);
       shareUnitsByMember = basisPoints;
     } else {
       const rawWeights = new Map(Object.entries(split.weights));
       const order = [...rawWeights.keys()];
       resolved = distributeByWeights(input.amountCents, rawWeights, order);
-      shareUnitsByMember = new Map(order.map((m) => [m, Math.round((rawWeights.get(m) ?? 0) * 100)]));
+      shareUnitsByMember = new Map(
+        order.map((m) => [m, Math.round((rawWeights.get(m) ?? 0) * 100)]),
+      );
     }
 
     await db.insert(schema.expenseSplits).values(
@@ -262,61 +317,128 @@ async function main(): Promise<void> {
   }
 
   await addExpense({
-    id: 'seed-expense-rent', groupId: GROUP_ROOMIES, description: 'Rent — March', amountCents: 240_000, currency: 'USD',
-    category: 'rent', occurredOn: daysAgo(25), splitMethod: 'equal',
+    id: 'seed-expense-rent',
+    groupId: GROUP_ROOMIES,
+    description: 'Rent — March',
+    amountCents: 240_000,
+    currency: 'USD',
+    category: 'rent',
+    occurredOn: daysAgo(25),
+    splitMethod: 'equal',
     payers: [{ memberId: rOwner, amountCents: 240_000 }],
-    split: { method: 'equal', participants: rAll }, createdByUserId: users.owner.id,
-  });
-  await addExpense({
-    id: 'seed-expense-groceries-1', groupId: GROUP_ROOMIES, description: 'Groceries — Costco run', amountCents: 18_642, currency: 'USD',
-    category: 'groceries', occurredOn: daysAgo(20), splitMethod: 'equal',
-    payers: [{ memberId: rAdmin, amountCents: 18_642 }],
-    split: { method: 'equal', participants: rAll }, createdByUserId: users.admin.id,
-  });
-  await addExpense({
-    id: 'seed-expense-internet', groupId: GROUP_ROOMIES, description: 'Internet bill', amountCents: 7_999, currency: 'USD',
-    category: 'utilities', occurredOn: daysAgo(18), splitMethod: 'equal',
-    payers: [{ memberId: rUser, amountCents: 7_999 }],
-    split: { method: 'equal', participants: rAll }, createdByUserId: users.member.id,
-  });
-  await addExpense({
-    id: 'seed-expense-electricity', groupId: GROUP_ROOMIES, description: 'Electricity bill', amountCents: 14_230, currency: 'USD',
-    category: 'utilities', occurredOn: daysAgo(15), splitMethod: 'amount',
-    payers: [{ memberId: rAuditor, amountCents: 14_230 }],
-    split: { method: 'amount', amounts: { [rOwner]: 6_000, [rAdmin]: 3_000, [rUser]: 3_000, [rAuditor]: 2_230 } },
-    createdByUserId: users.auditor.id,
-  });
-  await addExpense({
-    id: 'seed-expense-streaming', groupId: GROUP_ROOMIES, description: 'Netflix + Spotify bundle', amountCents: 3_497, currency: 'USD',
-    category: 'entertainment', occurredOn: daysAgo(12), splitMethod: 'percentage',
-    payers: [{ memberId: rOwner, amountCents: 3_497 }],
-    split: { method: 'percentage', weights: { [rOwner]: 40, [rAdmin]: 20, [rUser]: 20, [rAuditor]: 20 } },
+    split: { method: 'equal', participants: rAll },
     createdByUserId: users.owner.id,
   });
   await addExpense({
-    id: 'seed-expense-costco-membership', groupId: GROUP_ROOMIES, description: 'Costco membership renewal', amountCents: 6_000, currency: 'USD',
-    category: 'general', occurredOn: daysAgo(10), splitMethod: 'shares',
+    id: 'seed-expense-groceries-1',
+    groupId: GROUP_ROOMIES,
+    description: 'Groceries — Costco run',
+    amountCents: 18_642,
+    currency: 'USD',
+    category: 'groceries',
+    occurredOn: daysAgo(20),
+    splitMethod: 'equal',
+    payers: [{ memberId: rAdmin, amountCents: 18_642 }],
+    split: { method: 'equal', participants: rAll },
+    createdByUserId: users.admin.id,
+  });
+  await addExpense({
+    id: 'seed-expense-internet',
+    groupId: GROUP_ROOMIES,
+    description: 'Internet bill',
+    amountCents: 7_999,
+    currency: 'USD',
+    category: 'utilities',
+    occurredOn: daysAgo(18),
+    splitMethod: 'equal',
+    payers: [{ memberId: rUser, amountCents: 7_999 }],
+    split: { method: 'equal', participants: rAll },
+    createdByUserId: users.member.id,
+  });
+  await addExpense({
+    id: 'seed-expense-electricity',
+    groupId: GROUP_ROOMIES,
+    description: 'Electricity bill',
+    amountCents: 14_230,
+    currency: 'USD',
+    category: 'utilities',
+    occurredOn: daysAgo(15),
+    splitMethod: 'amount',
+    payers: [{ memberId: rAuditor, amountCents: 14_230 }],
+    split: {
+      method: 'amount',
+      amounts: { [rOwner]: 6_000, [rAdmin]: 3_000, [rUser]: 3_000, [rAuditor]: 2_230 },
+    },
+    createdByUserId: users.auditor.id,
+  });
+  await addExpense({
+    id: 'seed-expense-streaming',
+    groupId: GROUP_ROOMIES,
+    description: 'Netflix + Spotify bundle',
+    amountCents: 3_497,
+    currency: 'USD',
+    category: 'entertainment',
+    occurredOn: daysAgo(12),
+    splitMethod: 'percentage',
+    payers: [{ memberId: rOwner, amountCents: 3_497 }],
+    split: {
+      method: 'percentage',
+      weights: { [rOwner]: 40, [rAdmin]: 20, [rUser]: 20, [rAuditor]: 20 },
+    },
+    createdByUserId: users.owner.id,
+  });
+  await addExpense({
+    id: 'seed-expense-costco-membership',
+    groupId: GROUP_ROOMIES,
+    description: 'Costco membership renewal',
+    amountCents: 6_000,
+    currency: 'USD',
+    category: 'general',
+    occurredOn: daysAgo(10),
+    splitMethod: 'shares',
     payers: [{ memberId: rAdmin, amountCents: 6_000 }],
     split: { method: 'shares', weights: { [rOwner]: 2, [rAdmin]: 2, [rUser]: 1, [rAuditor]: 1 } },
     createdByUserId: users.admin.id,
   });
   await addExpense({
-    id: 'seed-expense-pizza', groupId: GROUP_ROOMIES, description: 'Pizza night', amountCents: 5_200, currency: 'USD',
-    category: 'entertainment', occurredOn: daysAgo(7), splitMethod: 'equal',
+    id: 'seed-expense-pizza',
+    groupId: GROUP_ROOMIES,
+    description: 'Pizza night',
+    amountCents: 5_200,
+    currency: 'USD',
+    category: 'entertainment',
+    occurredOn: daysAgo(7),
+    splitMethod: 'equal',
     payers: [{ memberId: rUser, amountCents: 5_200 }],
-    split: { method: 'equal', participants: rAll }, createdByUserId: users.member.id,
+    split: { method: 'equal', participants: rAll },
+    createdByUserId: users.member.id,
   });
   await addExpense({
-    id: 'seed-expense-cleaning', groupId: GROUP_ROOMIES, description: 'Cleaning supplies', amountCents: 2_875, currency: 'USD',
-    category: 'general', occurredOn: daysAgo(3), splitMethod: 'equal',
+    id: 'seed-expense-cleaning',
+    groupId: GROUP_ROOMIES,
+    description: 'Cleaning supplies',
+    amountCents: 2_875,
+    currency: 'USD',
+    category: 'general',
+    occurredOn: daysAgo(3),
+    splitMethod: 'equal',
     payers: [{ memberId: rOwner, amountCents: 2_875 }],
-    split: { method: 'equal', participants: rAll }, createdByUserId: users.owner.id,
+    split: { method: 'equal', participants: rAll },
+    createdByUserId: users.owner.id,
   });
 
   await db.insert(schema.settlements).values({
-    id: 'seed-settlement-1', groupId: GROUP_ROOMIES, tenantId: TENANT_ID,
-    fromMemberId: rAuditor, toMemberId: rOwner, amountCents: 5_000, currency: 'USD',
-    note: 'Partial payback via Venmo', settledOn: daysAgo(2), createdByUserId: users.auditor.id, createdAt: daysAgo(2),
+    id: 'seed-settlement-1',
+    groupId: GROUP_ROOMIES,
+    tenantId: TENANT_ID,
+    fromMemberId: rAuditor,
+    toMemberId: rOwner,
+    amountCents: 5_000,
+    currency: 'USD',
+    note: 'Partial payback via Venmo',
+    settledOn: daysAgo(2),
+    createdByUserId: users.auditor.id,
+    createdAt: daysAgo(2),
   });
 
   // -------------------------------------------------------------------
@@ -324,9 +446,16 @@ async function main(): Promise<void> {
   // payer, a guest settling up, one expense split among only 3 of 4.
   // -------------------------------------------------------------------
   await db.insert(schema.groups).values({
-    id: GROUP_TRIP, tenantId: TENANT_ID, name: 'Bali Trip', description: 'June trip with the group.',
-    defaultCurrency: 'EUR', startDate: daysAgo(40), endDate: daysAgo(33),
-    createdByUserId: users.owner.id, createdAt: daysAgo(45), updatedAt: daysAgo(45),
+    id: GROUP_TRIP,
+    tenantId: TENANT_ID,
+    name: 'Bali Trip',
+    description: 'June trip with the group.',
+    defaultCurrency: 'EUR',
+    startDate: daysAgo(40),
+    endDate: daysAgo(33),
+    createdByUserId: users.owner.id,
+    createdAt: daysAgo(45),
+    updatedAt: daysAgo(45),
   });
 
   const tOwner = 'seed-member-t-owner';
@@ -334,63 +463,143 @@ async function main(): Promise<void> {
   const tSam = 'seed-member-t-sam';
   const tJordan = 'seed-member-t-jordan';
   await db.insert(schema.groupMembers).values([
-    { id: tOwner, groupId: GROUP_TRIP, tenantId: TENANT_ID, kind: 'user', userId: users.owner.id, role: 'owner', joinedAt: daysAgo(45) },
-    { id: tAdmin, groupId: GROUP_TRIP, tenantId: TENANT_ID, kind: 'user', userId: users.admin.id, role: 'member', joinedAt: daysAgo(45) },
     {
-      id: tSam, groupId: GROUP_TRIP, tenantId: TENANT_ID, kind: 'guest', guestName: 'Sam Rivera',
-      guestEmail: 'sam.rivera@example.test', guestInviteStatus: 'sent', guestOwnerUserId: users.admin.id,
-      role: 'member', joinedAt: daysAgo(44),
+      id: tOwner,
+      groupId: GROUP_TRIP,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.owner.id,
+      role: 'owner',
+      joinedAt: daysAgo(45),
     },
     {
-      id: tJordan, groupId: GROUP_TRIP, tenantId: TENANT_ID, kind: 'guest', guestName: 'Jordan Lee',
-      guestOwnerUserId: users.owner.id, role: 'member', joinedAt: daysAgo(44),
+      id: tAdmin,
+      groupId: GROUP_TRIP,
+      tenantId: TENANT_ID,
+      kind: 'user',
+      userId: users.admin.id,
+      role: 'member',
+      joinedAt: daysAgo(45),
+    },
+    {
+      id: tSam,
+      groupId: GROUP_TRIP,
+      tenantId: TENANT_ID,
+      kind: 'guest',
+      guestName: 'Sam Rivera',
+      guestEmail: 'sam.rivera@example.test',
+      guestInviteStatus: 'sent',
+      guestOwnerUserId: users.admin.id,
+      role: 'member',
+      joinedAt: daysAgo(44),
+    },
+    {
+      id: tJordan,
+      groupId: GROUP_TRIP,
+      tenantId: TENANT_ID,
+      kind: 'guest',
+      guestName: 'Jordan Lee',
+      guestOwnerUserId: users.owner.id,
+      role: 'member',
+      joinedAt: daysAgo(44),
     },
   ]);
   const tAll = [tOwner, tAdmin, tSam, tJordan];
 
   await addExpense({
-    id: 'seed-expense-flights', groupId: GROUP_TRIP, description: 'Flights', amountCents: 48_000, currency: 'EUR',
-    category: 'travel', occurredOn: daysAgo(40), splitMethod: 'equal',
+    id: 'seed-expense-flights',
+    groupId: GROUP_TRIP,
+    description: 'Flights',
+    amountCents: 48_000,
+    currency: 'EUR',
+    category: 'travel',
+    occurredOn: daysAgo(40),
+    splitMethod: 'equal',
     payers: [{ memberId: tOwner, amountCents: 48_000 }],
-    split: { method: 'equal', participants: tAll }, createdByUserId: users.owner.id,
-  });
-  await addExpense({
-    id: 'seed-expense-hotel', groupId: GROUP_TRIP, description: 'Hotel — 4 nights', amountCents: 62_000, currency: 'EUR',
-    category: 'travel', occurredOn: daysAgo(38), splitMethod: 'equal',
-    payers: [{ memberId: tAdmin, amountCents: 62_000 }],
-    split: { method: 'equal', participants: tAll }, createdByUserId: users.admin.id,
-  });
-  await addExpense({
-    id: 'seed-expense-dinner', groupId: GROUP_TRIP, description: 'Dinner at Locavore', amountCents: 15_680, currency: 'EUR',
-    category: 'entertainment', occurredOn: daysAgo(36), splitMethod: 'equal',
-    payers: [{ memberId: tSam, amountCents: 15_680 }], // guest as payer
-    split: { method: 'equal', participants: tAll }, createdByUserId: users.owner.id,
-  });
-  await addExpense({
-    id: 'seed-expense-scooters', groupId: GROUP_TRIP, description: 'Scooter rental', amountCents: 9_000, currency: 'EUR',
-    category: 'transport', occurredOn: daysAgo(35), splitMethod: 'amount',
-    payers: [{ memberId: tJordan, amountCents: 9_000 }], // guest as payer
-    split: { method: 'amount', amounts: { [tOwner]: 3_000, [tAdmin]: 3_000, [tSam]: 1_500, [tJordan]: 1_500 } },
+    split: { method: 'equal', participants: tAll },
     createdByUserId: users.owner.id,
   });
   await addExpense({
-    id: 'seed-expense-beach-club', groupId: GROUP_TRIP, description: 'Beach club day pass', amountCents: 20_000, currency: 'EUR',
-    category: 'entertainment', occurredOn: daysAgo(34), splitMethod: 'equal',
+    id: 'seed-expense-hotel',
+    groupId: GROUP_TRIP,
+    description: 'Hotel — 4 nights',
+    amountCents: 62_000,
+    currency: 'EUR',
+    category: 'travel',
+    occurredOn: daysAgo(38),
+    splitMethod: 'equal',
+    payers: [{ memberId: tAdmin, amountCents: 62_000 }],
+    split: { method: 'equal', participants: tAll },
+    createdByUserId: users.admin.id,
+  });
+  await addExpense({
+    id: 'seed-expense-dinner',
+    groupId: GROUP_TRIP,
+    description: 'Dinner at Locavore',
+    amountCents: 15_680,
+    currency: 'EUR',
+    category: 'entertainment',
+    occurredOn: daysAgo(36),
+    splitMethod: 'equal',
+    payers: [{ memberId: tSam, amountCents: 15_680 }], // guest as payer
+    split: { method: 'equal', participants: tAll },
+    createdByUserId: users.owner.id,
+  });
+  await addExpense({
+    id: 'seed-expense-scooters',
+    groupId: GROUP_TRIP,
+    description: 'Scooter rental',
+    amountCents: 9_000,
+    currency: 'EUR',
+    category: 'transport',
+    occurredOn: daysAgo(35),
+    splitMethod: 'amount',
+    payers: [{ memberId: tJordan, amountCents: 9_000 }], // guest as payer
+    split: {
+      method: 'amount',
+      amounts: { [tOwner]: 3_000, [tAdmin]: 3_000, [tSam]: 1_500, [tJordan]: 1_500 },
+    },
+    createdByUserId: users.owner.id,
+  });
+  await addExpense({
+    id: 'seed-expense-beach-club',
+    groupId: GROUP_TRIP,
+    description: 'Beach club day pass',
+    amountCents: 20_000,
+    currency: 'EUR',
+    category: 'entertainment',
+    occurredOn: daysAgo(34),
+    splitMethod: 'equal',
     payers: [{ memberId: tAdmin, amountCents: 20_000 }],
     split: { method: 'equal', participants: [tOwner, tAdmin, tSam] }, // Jordan skipped this one
     createdByUserId: users.admin.id,
   });
   await addExpense({
-    id: 'seed-expense-souvenirs', groupId: GROUP_TRIP, description: 'Souvenirs', amountCents: 4_560, currency: 'EUR',
-    category: 'general', occurredOn: daysAgo(33), splitMethod: 'equal',
+    id: 'seed-expense-souvenirs',
+    groupId: GROUP_TRIP,
+    description: 'Souvenirs',
+    amountCents: 4_560,
+    currency: 'EUR',
+    category: 'general',
+    occurredOn: daysAgo(33),
+    splitMethod: 'equal',
     payers: [{ memberId: tOwner, amountCents: 4_560 }],
-    split: { method: 'equal', participants: tAll }, createdByUserId: users.owner.id,
+    split: { method: 'equal', participants: tAll },
+    createdByUserId: users.owner.id,
   });
 
   await db.insert(schema.settlements).values({
-    id: 'seed-settlement-2', groupId: GROUP_TRIP, tenantId: TENANT_ID,
-    fromMemberId: tJordan, toMemberId: tOwner, amountCents: 15_000, currency: 'EUR',
-    note: 'Bank transfer after the trip', settledOn: daysAgo(30), createdByUserId: users.owner.id, createdAt: daysAgo(30),
+    id: 'seed-settlement-2',
+    groupId: GROUP_TRIP,
+    tenantId: TENANT_ID,
+    fromMemberId: tJordan,
+    toMemberId: tOwner,
+    amountCents: 15_000,
+    currency: 'EUR',
+    note: 'Bank transfer after the trip',
+    settledOn: daysAgo(30),
+    createdByUserId: users.owner.id,
+    createdAt: daysAgo(30),
   });
 
   client.close();
@@ -399,8 +608,12 @@ async function main(): Promise<void> {
   console.log('  2 groups, 6 group members (4 real + 2 guests), 14 expenses, 2 settlements.');
   console.log('');
   console.log('Sign in as owner@sovereign.local (password: sovereign) to see:');
-  console.log('  - "Roomies" (USD) — all 4 real dev accounts, every split method, a partial settlement');
-  console.log('  - "Bali Trip" (EUR) — 2 real users + 2 guests, a guest as payer twice, a guest settling up');
+  console.log(
+    '  - "Roomies" (USD) — all 4 real dev accounts, every split method, a partial settlement',
+  );
+  console.log(
+    '  - "Bali Trip" (EUR) — 2 real users + 2 guests, a guest as payer twice, a guest settling up',
+  );
 }
 
 await main();

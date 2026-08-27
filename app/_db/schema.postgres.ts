@@ -153,3 +153,25 @@ export const userSettings = pgTable('user_settings', {
   primaryCurrency: text('primary_currency').notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 });
+
+export const reminders = pgTable(
+  'reminders',
+  {
+    id: text('id').primaryKey(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => groups.id),
+    tenantId: text('tenant_id').notNull(),
+    fromMemberId: text('from_member_id')
+      .notNull()
+      .references(() => groupMembers.id),
+    toMemberId: text('to_member_id')
+      .notNull()
+      .references(() => groupMembers.id),
+    sentAt: bigint('sent_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [
+    index('reminders_group_id_idx').on(table.groupId),
+    index('reminders_from_to_idx').on(table.fromMemberId, table.toMemberId),
+  ],
+);

@@ -34,6 +34,10 @@
 }
 
 .description {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-sm);
   color: var(--sv-color-text-primary);
 }
@@ -47,4 +51,20 @@
   font-size: var(--sv-font-size-xs);
   color: var(--sv-color-text-muted);
   white-space: nowrap;
+}
+
+.warningIcon {
+  color: var(--sv-color-warning-text);
+  flex-shrink: 0;
+}
+
+.actionWrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+
+.actionError {
+  font-size: var(--sv-font-size-xs);
+  color: var(--sv-color-error-text);
 }

@@ -634,6 +634,107 @@ before and after live verification (no code changes were needed as a
 result of live testing this time — everything worked as designed on the
 first real attempt).
 
+**2026-08-27 — Inbox: actionable rows (Post-MVP item 4, completes it).**
+The half deferred back when Inbox first shipped — both prerequisites
+(guest invites, item 1; `sdk.activity.log()`/`sdk.notifications.send()`
+wiring, item 7) landed since, unblocking this directly. Two new row kinds,
+interleaved chronologically with the existing plain activity rows exactly
+as UI-FLOW.md §5's mockup shows, not pinned separately:
+
+- **`[Resend]`** — a bounced guest invite, reusing `resendGuestInviteAction`
+  verbatim (no new action needed). Only surfaced for a group the user
+  actually manages — matches that action's own `requireGroupManage` gate,
+  so the button is never offered somewhere it would just fail.
+- **`[Remind]`** — a new `sendReminderAction` (`app/_lib/reminders.ts`),
+  `group-view` gated per SPEC.md §6 (any active member, not owner-only —
+  the one action in this plugin that isn't `group-manage`-scoped). Requires
+  a new `reminders` table (`group_id`/`tenant_id`/`from_member_id`/
+  `to_member_id`/`sent_at`, migrations generated for both dialects,
+  Postgres FK qualifiers manually stripped per the established
+  `docs/plugin-database.md` convention) — the spec's "one reminder per
+  (actor, target, group) per 24h, checked server-side" requirement has no
+  way to be satisfied without persisted state; `sdk.activity.log()` is
+  write-only from a plugin's own perspective (no read/query method in the
+  SDK), so it couldn't double as that store.
+
+**Re-derives the real balance server-side before allowing a reminder** —
+`sendReminderAction` doesn't trust the client's claimed amount; it re-runs
+`resolveCounterparties` on the group's current data and confirms the
+target genuinely owes the actor, same discipline as every money-adjacent
+action in this plugin. A row on cooldown is simply not shown at all
+(rather than shown-but-disabled) — Inbox's whole purpose is "here's
+something to act on," and the underlying balance is already visible on
+Groups/People/Overview regardless, so a nudge with nothing new to do
+isn't worth a row.
+
+**`InboxActionButton`** (new, `app/_components/`) is a small shared
+`useTransition` + `router.refresh()` trigger for both row kinds — no local
+"resolved" state needed: a successful action changes the underlying data
+(invite status flips to `'sent'`, or the reminder goes on cooldown), so the
+row simply isn't in the feed anymore once the refresh re-fetches it
+server-side, confirmed live (see below) rather than assumed.
+
+**A real gap found and fixed, not anticipated during review**: the new
+`reminders` table's foreign keys (`from_member_id`/`to_member_id` →
+`group_members.id`) broke `scripts/seed.ts --reset` the first time it ran
+after this table existed — `FOREIGN KEY constraint failed`, since the
+script's own delete-in-dependency-order list predates this table and never
+learned about it. Fixed by adding a `reminders` delete (scoped to the two
+seed group ids, same as every other table there) immediately before the
+existing `group_members` delete, matching the file's own established
+ordering convention exactly. Editing this file surfaced its own
+pre-existing, unrelated Prettier drift (same category noted in earlier
+entries) — accepted the full-file reformat this time rather than leaving
+it partially clean, since (unlike every other drifted file this session)
+there was a real, substantive reason to touch this one; confirmed via a
+filtered diff that every changed line was pure re-wrapping, no logic
+changes, before accepting it.
+
+**Live-verified end-to-end** against the running dev server (same
+`preview_start {url: ...}` approach as prior entries), including applying
+the new migration to the live database first via `sv plugin migrate
+fs.sovereign.tally` (a real gap on its own: the already-running dev server
+predates this migration file and has no file-watcher that re-applies new
+ones — confirmed directly, not assumed, by querying `sqlite_master` for the
+table before and after running the command):
+
+- All three real "X owes you $Y — Remind" rows appeared correctly for the
+  seeded "Roomies" group, sorted correctly among the plain activity rows.
+  Clicking one succeeded, and the row was gone on the next render — the
+  DB confirmed why: a real `notifications` row for the correct recipient
+  (Dev Auditor, not the actor) with the exact coded title/body, a matching
+  `reminders` row recording the rate-limit state, and a
+  `fs.sovereign.tally:group.reminder_sent` entry in Console's own
+  `/console/activity` page.
+- Manually flipped a seeded guest's `guest_invite_status` to `'bounced'`
+  (nothing in the seed data starts in that state) to reach the `[Resend]`
+  path: the row rendered with the correct warning icon and copy, sorted by
+  the guest's `joinedAt` far down the feed as designed. Clicking Resend
+  surfaced a real, honest failure — "The invite email failed to send
+  again" — because this dev instance has real SMTP configured (Mailpit,
+  confirmed via `.env`) rather than running unconfigured, and the actual
+  send failed for an environment reason (Mailpit most likely not running
+  in this session). Treated as a successful verification of the *failure*
+  path, not a blocker: the action correctly attempted a real send, caught
+  the real error, and reported it honestly instead of falsely claiming
+  success — proving the integration, even though the success path itself
+  wasn't independently exercised this session.
+
+Test state reset afterward (`pnpm seed -- --reset`, after fixing the FK
+issue above) — confirmed via a fresh Inbox load that all three Remind rows
+returned (cooldown cleared) and the bounced-invite row was gone (guest
+status back to its seeded default).
+
+`pnpm typecheck`/`eslint`/`prettier --check` (scoped to touched files, now
+including the necessarily-reformatted `scripts/seed.ts`)/`pnpm
+design:tokens:check`/`pnpm test` (36 tests) all clean.
+
+**Still not built, deliberately**: the Notification Center unread-count
+tie-in and the sidebar's own unread badge (`TallySidebar.tsx`) — a
+separate UI surface from this feed, not a natural extension of it, and not
+part of what was asked for this task. UI-FLOW.md §5 is otherwise now fully
+implemented.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -652,10 +753,11 @@ in priority order:
    and non-zero-balance breakdowns by group and by person. Charts (spend by
    category, monthly/yearly trend) and "recent activity" were dropped from
    this design rather than deferred inside it — see Status.
-4. **Inbox** — 🚧 partially shipped 2026-08-27 (cross-group activity feed
-   only — see Status below); actionable rows and Notification Center
-   integration remain — merged activity/notification/action feed —
-   UI-FLOW.md §5.
+4. ~~**Inbox**~~ — ✅ shipped 2026-08-27 — cross-group activity feed, then
+   `[Resend]`/`[Remind]` actionable rows — see Status below. The
+   Notification Center unread-count tie-in and the sidebar's own unread
+   badge are the one piece still open, a separate UI surface
+   (`TallySidebar.tsx`), not this feed — UI-FLOW.md §5.
 5. ~~**Settings (account-level)**~~ — ✅ shipped 2026-08-27 — Primary
    Currency — UI-FLOW.md §8. (Per-group settings — name/description/
    currency/dates edit, member management, guest invites — is item 1

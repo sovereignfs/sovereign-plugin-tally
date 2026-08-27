@@ -226,3 +226,36 @@ export const userSettings = sqliteTable('user_settings', {
 });
 
 export type UserSettingsRow = typeof userSettings.$inferSelect;
+
+/**
+ * One row per reminder nudge sent (Inbox's `[Remind]` action, SPEC.md §6) —
+ * exists solely to enforce the spec's "one reminder per (actor, target,
+ * group) per 24h" rate limit server-side; nothing else reads this table.
+ * Never soft-deleted or otherwise mutated after insert — a plain append log.
+ */
+export const reminders = sqliteTable(
+  'reminders',
+  {
+    id: text('id').primaryKey(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => groups.id),
+    tenantId: text('tenant_id').notNull(),
+    /** Who sent the reminder. */
+    fromMemberId: text('from_member_id')
+      .notNull()
+      .references(() => groupMembers.id),
+    /** Who it was sent to — always `kind = 'user'` (a guest has no session
+     *  to notify, enforced at the action layer, not here). */
+    toMemberId: text('to_member_id')
+      .notNull()
+      .references(() => groupMembers.id),
+    sentAt: integer('sent_at').notNull(),
+  },
+  (table) => [
+    index('reminders_group_id_idx').on(table.groupId),
+    index('reminders_from_to_idx').on(table.fromMemberId, table.toMemberId),
+  ],
+);
+
+export type ReminderRow = typeof reminders.$inferSelect;
