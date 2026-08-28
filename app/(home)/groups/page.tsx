@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { BalanceChip, EmptyState, PageHeader } from '@sovereignfs/ui';
 import { BalanceChipStack } from '../../_components/BalanceChipStack';
 import { CreateGroupDialog } from '../../_components/CreateGroupDialog';
+import { MobileSettingsLink } from '../../_components/MobileSettingsLink';
 import { listGroupsForUser } from '../../_lib/groups';
 import { getUserSettings } from '../../_lib/settings';
 import styles from './page.module.css';
@@ -25,7 +26,15 @@ export default async function GroupsPage({
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Groups" action={<CreateGroupDialog defaultCurrency={primaryCurrency} />} />
+      <PageHeader
+        title="Groups"
+        action={
+          <>
+            <CreateGroupDialog defaultCurrency={primaryCurrency} />
+            <MobileSettingsLink />
+          </>
+        }
+      />
       {groupList.length === 0 ? (
         <EmptyState
           icon="layers"
@@ -55,7 +64,10 @@ export default async function GroupsPage({
                     {group.counterparties.slice(0, COUNTERPARTY_CAP).map((counterparty) => (
                       <li key={counterparty.memberId} className={styles.counterpartyRow}>
                         <span className={styles.counterpartyName}>{counterparty.label}</span>
-                        <BalanceChip amountCents={counterparty.amountCents} currency={counterparty.currency} />
+                        <BalanceChip
+                          amountCents={counterparty.amountCents}
+                          currency={counterparty.currency}
+                        />
                       </li>
                     ))}
                     {group.counterparties.length > COUNTERPARTY_CAP && (

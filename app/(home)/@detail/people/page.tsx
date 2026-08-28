@@ -29,8 +29,10 @@ export default async function PersonDetailSlot({
     <div className={styles.detail}>
       <div className={styles.header}>
         <h2 className={styles.title}>{person.label}</h2>
-        <Link href="/tally/people" className={styles.closeLink} aria-label="Close detail">
-          <Icon name="x" size="sm" aria-hidden />
+        <Link href="/tally/people" className={styles.closeLink} aria-label="Back to people">
+          <Icon name="x" size="sm" aria-hidden className={styles.closeIconDesktop} />
+          <Icon name="chevron-left" size="sm" aria-hidden className={styles.closeIconMobile} />
+          <span className={styles.closeLabelMobile}>People</span>
         </Link>
       </div>
 

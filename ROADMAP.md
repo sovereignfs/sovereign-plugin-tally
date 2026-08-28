@@ -990,6 +990,128 @@ once import lists grew past print-width — confirmed pure re-wrapping, no
 logic changes)/`pnpm design:tokens:check`/`pnpm test` (36 tests) all
 clean.
 
+**2026-08-28 — Mobile (Post-MVP item 6, the last item on this list).**
+UI-FLOW.md §6's fork: below the platform's mobile breakpoint, the desktop
+`ThreeColumnLayout` tree is never mounted at all — a completely different,
+single-full-width-pane drill-down presentation renders instead, backed by
+a self-rendered `MobileFooter` (`manifest.json`'s `shellConfig.mobileFooter:
+false` had been set since scaffold time, anticipating this).
+
+**Two scope decisions checked with the developer before building, both
+because UI-FLOW.md's own text turned out to not fully match reality once
+checked against the real `@sovereignfs/ui` component APIs and platform
+architecture** (matching this session's own established discipline of not
+trusting a spec doc at face value — the icon list and the "tabs" framing
+were both already found stale earlier in this plugin's history):
+
+- **Header: kept the platform's default, not self-rendered.**
+  UI-FLOW.md asked for "the platform's header, plus a trailing gear icon
+  and an Add-expense action, always visible" — but `MobileHeader`'s real
+  API has no slot for extra actions beyond an optional `title`; self-
+  rendering it (`shellConfig.mobileHeader: false`) means rebuilding a
+  *working* notification bell and account menu from scratch (confirmed by
+  reading `example-plugins/example-mobile-poc`, the platform's own
+  stability-evaluation reference for this exact component pair), a real
+  cost for a benefit an in-page alternative gets close enough to. Settings
+  is reached instead via a `MobileSettingsLink` gear icon
+  (`useIsMobile()`-gated, renders nothing on desktop) composed into each
+  of the 4 list screens' existing `PageHeader`'s `action` slot — matching
+  `PageHeader`'s own documented "the action content's own responsibility
+  to look different on mobile" convention. "Add expense always visible
+  regardless of section" was also corrected against reality, not just
+  API constraints: desktop itself has never had a global Add-expense
+  either — it's scoped to Group detail's own header, where it already
+  lived — so mobile mirrors that instead of introducing a new global
+  affordance neither platform nor spec's own desktop-side design has.
+- **Footer: built a real "Apps" drawer, not a stub.** UI-FLOW.md claimed
+  `MobileFooter`'s center launcher was "already exactly what you asked
+  for, not something new to build" — false: there is no platform-level
+  drawer a plugin can reach into (`runtime`'s own `MobileNav` is private
+  to the shell). `example-plugins/example-mobile-poc` is the real
+  reference; built the same way — `sdk.plugins.list()` (no manifest
+  permission required, confirmed against `docs/plugin-development.md`'s
+  full permission table — it's not gated) fetched server-side in
+  `(home)/layout.tsx`, filtered to `availableToUser` and excluding Tally
+  itself, passed down as a plain serializable prop, rendered via a real
+  `MobileAppsDrawer`. Live-verified it lists the real 8 other installed
+  plugins (Account/Console/Docs/Kanban/Launcher/Ledger/Sheets/Warden) with
+  correct `/plugin-icons/<id>.svg` icons and working navigation.
+
+**Drill-down**: `TallyResponsiveShell.tsx` (new, `useIsMobile()` + plain
+early return — simpler than `<ResponsiveSurface web mobile/>` for this
+two-branch case, no material difference either way) forks between the
+unchanged desktop tree and `TallyMobileShell.tsx` (new), which shows
+either the `@detail` slot (a selected group/person, full-width) or the
+current section's list, plus the footer — 4 icons split left/right
+matching the sidebar's own order (Overview/Groups left, People/Inbox
+right; Settings freed from the footer, see above), `onClick` +
+`router.push` rather than `FooterIcon`'s plain-`<a>` `href`, matching the
+platform's own `MobileNav` precedent for client-side navigation.
+`@detail/groups/page.tsx`/`@detail/people/page.tsx`'s existing X
+close-link gained a CSS-only (`@media (max-width: 768px)`, matching
+`MOBILE_BREAKPOINT_PX`) chevron-left-plus-label variant, reordered ahead
+of the title via `order: -1` — desktop's X is completely unchanged, no
+JS/breakpoint-conditional component needed for this piece at all.
+
+**A real bug found and fixed, not anticipated during review** — blanked
+the entire mobile content pane on every route with nothing selected. First
+attempt picked which of `children`/`detail` to show via `detail ?? children`
+(the parallel-route slot's content when present, else the current section).
+Live-tested and found genuinely broken: `/tally` rendered the header/footer
+chrome correctly but a completely empty content area. Root-caused by direct
+inspection rather than guessing — a `detail === null` check printed `false`
+even on `/tally`, a route where `@detail/default.tsx` really does
+`return null` server-side. The `detail` *prop value* a client component
+receives is a real Next.js parallel-route/RSC reference, never the literal
+JS `null`, even when what it will eventually render is nothing — `??` only
+treats `null`/`undefined` as absent, so it always picked `detail`, which
+then correctly rendered as empty, exactly matching the observed bug. (First
+fix attempt — switching `<ResponsiveSurface web mobile/>` to a plain
+`useIsMobile()` early return — was a real simplification but didn't
+address this; kept anyway, reverted the wrong theory out of the code
+comment once the actual cause was confirmed.) Fixed by not testing the RSC
+prop's nullness in JS at all: `TallyMobileShell` now decides via the URL's
+own `?g=`/`?p=` param (`useSearchParams()`, real synchronously-known client
+state) which of `children`/`detail` to render, passing both down rather
+than pre-merging them.
+
+**Live-verified end-to-end** against the real running dev server (mobile
+viewport, `resize_window` preset mobile), including the one part
+un-automatable through normal UI interaction — a native OS file-open
+dialog doesn't apply here, but click coordinates from the accessibility
+tree occasionally landed on the wrong element at this viewport size, worked
+around by driving `aria-label`-targeted elements directly via
+`javascript_tool` `.click()` calls, matching the exact real DOM nodes a
+user's tap would hit:
+
+- Overview: headline/stat cards, Groups/People breakdown, Settings gear —
+  all render correctly full-width.
+- Groups list → tapped into "Bali Trip": full drill-down (back link,
+  gear, Close group, Add expense/Record settlement, Balance summary,
+  Balances, Activity feed with the receipt-link icon slot intact) all
+  rendered; back link returned cleanly to the list with no stale state.
+- People list → tapped into "Dev Admin": same drill-down shape, cross-group
+  activity feed with `· Roomies` group-name suffixes intact.
+- Inbox: full feed including `[Remind]` actionable rows with their `send`
+  icon, footer's Inbox icon correctly active.
+- Settings: reachable via the gear icon from every one of the other 4
+  screens, renders full-width, correctly has no active footer icon (not
+  one of the 4 sections).
+- Apps drawer: opens above the footer with correct clearance (confirming
+  the `--sv-shell-footer-height` local redeclaration — the same defensive
+  fix `example-mobile-poc` needed for the identical reason, a self-rendered
+  footer zeroing the shell's own copy of that variable) — no clipped last
+  row.
+- **Desktop re-confirmed completely unaffected** after all of the above:
+  fresh reload of `/tally/groups?g=seed-group-roomies` at desktop width
+  shows the unchanged 3-column layout, sidebar, and the original X
+  close-icon (not the mobile chevron+label) — the responsive fork and the
+  CSS breakpoint swap both correctly leave desktop's existing, already-
+  shipped experience untouched.
+
+`pnpm typecheck`/`eslint`/`prettier --check`/`pnpm design:tokens:check`/
+`pnpm test` (36 tests) all clean.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -1017,8 +1139,9 @@ in priority order:
    Currency — UI-FLOW.md §8. (Per-group settings — name/description/
    currency/dates edit, member management, guest invites — is item 1
    above, a separate, much larger surface UI-FLOW.md §8 also covers.)
-6. **Mobile** — `ResponsiveSurface` fork, self-rendered `MobileFooter`,
-   drill-down stack — UI-FLOW.md §6.
+6. ~~**Mobile**~~ — ✅ shipped 2026-08-28 — responsive fork, self-rendered
+   `MobileFooter` with a real app drawer, drill-down stack — see Status
+   below — UI-FLOW.md §6.
 7. ~~**Notifications + activity log wiring**~~ — ✅ shipped 2026-08-27 —
    `sdk.activity.log()` on every mutating action, `sdk.notifications.send()`
    on the three SPEC.md §6 names (member added, expense added, settlement

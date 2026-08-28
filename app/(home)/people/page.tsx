@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { Avatar, EmptyState, PageHeader } from '@sovereignfs/ui';
 import { BalanceChipStack } from '../../_components/BalanceChipStack';
 import { CurrencyStack } from '../../_components/CurrencyStack';
+import { MobileSettingsLink } from '../../_components/MobileSettingsLink';
 import { getPeopleForUser } from '../../_lib/people';
 import styles from './page.module.css';
 
@@ -23,7 +24,7 @@ export default async function PeoplePage({
 
   return (
     <div className={styles.page}>
-      <PageHeader title="People" />
+      <PageHeader title="People" action={<MobileSettingsLink />} />
 
       {!data.hasGroups ? (
         <EmptyState
@@ -54,7 +55,10 @@ export default async function PeoplePage({
                 <li key={person.personKey}>
                   <Link
                     href={`/tally/people?p=${encodeURIComponent(person.personKey)}`}
-                    className={[styles.row, person.personKey === selectedPersonKey ? styles.rowActive : '']
+                    className={[
+                      styles.row,
+                      person.personKey === selectedPersonKey ? styles.rowActive : '',
+                    ]
                       .filter(Boolean)
                       .join(' ')}
                   >

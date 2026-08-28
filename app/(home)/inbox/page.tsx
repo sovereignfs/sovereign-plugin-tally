@@ -4,6 +4,7 @@ import { getInboxFeed } from '../../_lib/inbox';
 import { resendGuestInviteAction } from '../../_lib/group-settings';
 import { sendReminderAction } from '../../_lib/reminders';
 import { InboxActionButton } from '../../_components/InboxActionButton';
+import { MobileSettingsLink } from '../../_components/MobileSettingsLink';
 import styles from './page.module.css';
 
 /** Rows shown before the feed is truncated — not the full spec (which has
@@ -30,7 +31,7 @@ export default async function InboxPage() {
   if (!data.hasGroups) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Inbox" />
+        <PageHeader title="Inbox" action={<MobileSettingsLink />} />
         <EmptyState
           icon="inbox"
           heading="Nothing here yet"
@@ -44,7 +45,7 @@ export default async function InboxPage() {
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Inbox" />
+      <PageHeader title="Inbox" action={<MobileSettingsLink />} />
       {items.length === 0 ? (
         <p className={styles.placeholder}>
           Expense activity, settlements, and things needing your attention will show up here.

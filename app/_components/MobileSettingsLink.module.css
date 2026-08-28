@@ -1,0 +1,14 @@
+.link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--sv-radius-md);
+  color: var(--sv-color-text-muted);
+}
+
+.link:hover {
+  background-color: var(--sv-color-surface-sunken);
+  color: var(--sv-color-text-primary);
+}

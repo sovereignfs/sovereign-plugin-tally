@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import { ThreeColumnLayout } from '@sovereignfs/ui';
-import { TallySidebar } from '../_components/TallySidebar';
+import { sdk } from '@sovereignfs/sdk';
+import { TallyResponsiveShell } from '../_components/TallyResponsiveShell';
 import { registerPortabilityHandlers } from '../_lib/portability';
 import styles from './layout.module.css';
 
@@ -27,6 +27,17 @@ import styles from './layout.module.css';
  * ROADMAP.md task 5): selecting a group shows the detail column, list
  * stays visible; switching selection updates the detail column in place;
  * closing collapses back to 2 columns; zero console errors.
+ *
+ * Below `TallyResponsiveShell`'s mobile breakpoint, the desktop
+ * `ThreeColumnLayout` tree above is never mounted at all — `ResponsiveSurface`
+ * forks to a completely different, drill-down single-pane tree instead
+ * (UI-FLOW.md §6; `TallyResponsiveShell.tsx`/`TallyMobileShell.tsx` own the
+ * details). That mobile tree self-renders its own `MobileFooter` with a real
+ * "Apps" drawer, which needs the installed-plugin list `sdk.plugins.list()`
+ * provides — fetched here, server-side, once per request (no manifest
+ * permission required — `sdk.plugins` isn't gated, confirmed against
+ * `docs/plugin-development.md`'s full permissions table) and passed down as
+ * a plain, serializable prop rather than fetched client-side.
  */
 export default async function TallyHomeLayout({
   children,
@@ -45,13 +56,16 @@ export default async function TallyHomeLayout({
     // Portability is a best-effort platform integration.
   }
 
+  const availablePlugins = await sdk.plugins.list();
+  const drawerPlugins = availablePlugins
+    .filter((p) => p.availableToUser && p.id !== 'fs.sovereign.tally')
+    .map((p) => ({ id: p.id, name: p.name, routePrefix: p.routePrefix, hasIcon: Boolean(p.icon) }));
+
   return (
     <div className={styles.homeFrame} data-plugin-fullbleed>
-      <ThreeColumnLayout sidebarWidth={240} detailWidth={360}>
-        <TallySidebar />
+      <TallyResponsiveShell plugins={drawerPlugins} detail={detail}>
         {children}
-        {detail}
-      </ThreeColumnLayout>
+      </TallyResponsiveShell>
     </div>
   );
 }

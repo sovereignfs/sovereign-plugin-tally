@@ -30,11 +30,39 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: var(--sv-space-1);
   color: var(--sv-color-text-muted);
 }
 
 .closeLink:hover {
   color: var(--sv-color-text-primary);
+}
+
+/* Desktop: a plain X, trailing after the title (unchanged from before
+   mobile existed). Mobile: a leading chevron-left + label back button —
+   UI-FLOW.md §6's explicit ask, matching MobileStackedDemo's own backLink
+   pattern — reordered ahead of the title via `order` rather than touching
+   the component's JSX structure. Breakpoint matches
+   @sovereignfs/ui's MOBILE_BREAKPOINT_PX. */
+.closeIconMobile,
+.closeLabelMobile {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .closeIconDesktop {
+    display: none;
+  }
+
+  .closeIconMobile,
+  .closeLabelMobile {
+    display: inline;
+  }
+
+  .closeLink {
+    order: -1;
+    font-size: var(--sv-font-size-sm);
+  }
 }
 
 .actionsRow {

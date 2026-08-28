@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { Avatar, Card, EmptyState, Icon, PageHeader } from '@sovereignfs/ui';
 import { BalanceChipStack } from '../_components/BalanceChipStack';
 import { CurrencyStack } from '../_components/CurrencyStack';
+import { MobileSettingsLink } from '../_components/MobileSettingsLink';
 import { getOverviewData } from '../_lib/overview';
 import styles from './page.module.css';
 
@@ -24,7 +25,7 @@ export default async function OverviewPage() {
   if (!data.hasGroups) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Overview" />
+        <PageHeader title="Overview" action={<MobileSettingsLink />} />
         <EmptyState
           icon="layers"
           heading="Create your first group"
@@ -38,7 +39,7 @@ export default async function OverviewPage() {
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Overview" />
+      <PageHeader title="Overview" action={<MobileSettingsLink />} />
 
       {settledUp ? (
         <p className={styles.placeholder}>You&rsquo;re all settled up.</p>
@@ -140,7 +141,8 @@ export default async function OverviewPage() {
                     <span className={styles.breakdownText}>
                       <span className={styles.breakdownName}>{person.label}</span>
                       <span className={styles.breakdownSubtitle}>
-                        Shared in {person.sharedGroupCount} group{person.sharedGroupCount === 1 ? '' : 's'}
+                        Shared in {person.sharedGroupCount} group
+                        {person.sharedGroupCount === 1 ? '' : 's'}
                       </span>
                     </span>
                     <BalanceChipStack balances={person.balances} />

@@ -1,0 +1,30 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* shellConfig.mobileFooter: false (manifest.json) zeroes the shell's own
+     --sv-shell-footer-height — correct, since the shell no longer renders
+     that chrome. But MobileFooter is rendered here instead, and Drawer
+     (MobileAppsDrawer's base) reads this same variable to know how much
+     space to leave above the footer for its own panel. Without redeclaring
+     it, Drawer thinks there's no footer to avoid and its last row gets
+     clipped behind ours — the exact bug `example-mobile-poc` hit and fixed
+     the same way (see its `MobileSectionCarousel.module.css`). Formula
+     matches MobileFooter's own real rendered height (60px + safe-area). */
+  --sv-shell-footer-height: calc(
+    60px + max(0px, env(safe-area-inset-bottom) - var(--sv-space-2, 8px))
+  );
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.drawerIconImg {
+  width: var(--sv-icon-size-lg);
+  height: var(--sv-icon-size-lg);
+}
