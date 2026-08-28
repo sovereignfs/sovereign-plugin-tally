@@ -41,6 +41,27 @@
   font-weight: 600;
 }
 
+/* Trailing unread-count pill on the Inbox row — visual convention matches
+   the platform's own NotificationBell badge (error-text background, white
+   text, 99+ cap), hand-rolled here rather than a shared @sovereignfs/ui
+   component since the platform's own bell doesn't use one either; not
+   worth a cross-repo platform PR for one small pattern (same reasoning
+   this plugin's icon task already applied). */
+.unreadBadge {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  background: var(--sv-color-error-text);
+  color: var(--sv-color-text-on-error);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
 .spacer {
   flex: 1;
 }

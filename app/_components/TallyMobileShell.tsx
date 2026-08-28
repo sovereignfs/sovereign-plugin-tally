@@ -23,6 +23,9 @@ interface TallyMobileShellProps {
    *  that's broken) — the URL's `?g=`/`?p=` param is the reliable signal. */
   detail: ReactNode;
   plugins: DrawerPlugin[];
+  /** Unread Tally notifications (UI-FLOW.md §5, `getUnreadInboxCount()`) —
+   *  overlaid on the footer's Inbox icon, `0` renders no badge. */
+  unreadCount: number;
 }
 
 /**
@@ -56,7 +59,12 @@ interface TallyMobileShellProps {
  * reference for building one, confirmed by reading it directly rather than
  * trusting that claim.
  */
-export function TallyMobileShell({ children, detail, plugins }: TallyMobileShellProps) {
+export function TallyMobileShell({
+  children,
+  detail,
+  plugins,
+  unreadCount,
+}: TallyMobileShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -98,8 +106,17 @@ export function TallyMobileShell({ children, detail, plugins }: TallyMobileShell
             onClick: () => router.push('/tally/people'),
           },
           {
-            icon: <Icon name="inbox" size="md" aria-hidden />,
-            label: 'Inbox',
+            icon: (
+              <span className={styles.iconWithBadge}>
+                <Icon name="inbox" size="md" aria-hidden />
+                {unreadCount > 0 && (
+                  <span className={styles.unreadBadge} aria-hidden>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+              </span>
+            ),
+            label: unreadCount > 0 ? `Inbox (${unreadCount} unread)` : 'Inbox',
             active: isInbox,
             onClick: () => router.push('/tally/inbox'),
           },

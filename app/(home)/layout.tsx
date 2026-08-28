@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { sdk } from '@sovereignfs/sdk';
 import { TallyResponsiveShell } from '../_components/TallyResponsiveShell';
+import { getUnreadInboxCount } from '../_lib/notifications';
 import { registerPortabilityHandlers } from '../_lib/portability';
 import styles from './layout.module.css';
 
@@ -38,6 +39,12 @@ import styles from './layout.module.css';
  * permission required — `sdk.plugins` isn't gated, confirmed against
  * `docs/plugin-development.md`'s full permissions table) and passed down as
  * a plain, serializable prop rather than fetched client-side.
+ *
+ * `unreadCount` (`getUnreadInboxCount()`) is the sidebar/mobile-footer
+ * Inbox unread badge (UI-FLOW.md §5) — ties into the platform's real
+ * Notification Center rather than a Tally-only counter; see that
+ * function's own doc comment for the scope this deliberately does and
+ * doesn't cover (accurate per-render, not live-polled).
  */
 export default async function TallyHomeLayout({
   children,
@@ -56,14 +63,17 @@ export default async function TallyHomeLayout({
     // Portability is a best-effort platform integration.
   }
 
-  const availablePlugins = await sdk.plugins.list();
+  const [availablePlugins, unreadCount] = await Promise.all([
+    sdk.plugins.list(),
+    getUnreadInboxCount(),
+  ]);
   const drawerPlugins = availablePlugins
     .filter((p) => p.availableToUser && p.id !== 'fs.sovereign.tally')
     .map((p) => ({ id: p.id, name: p.name, routePrefix: p.routePrefix, hasIcon: Boolean(p.icon) }));
 
   return (
     <div className={styles.homeFrame} data-plugin-fullbleed>
-      <TallyResponsiveShell plugins={drawerPlugins} detail={detail}>
+      <TallyResponsiveShell plugins={drawerPlugins} unreadCount={unreadCount} detail={detail}>
         {children}
       </TallyResponsiveShell>
     </div>

@@ -28,3 +28,30 @@
   width: var(--sv-icon-size-lg);
   height: var(--sv-icon-size-lg);
 }
+
+/* Unread-count overlay on the footer's Inbox icon — same visual convention
+   as @sovereignfs/ui's NotificationsPanel/the platform's own
+   NotificationBell badge (error-text background, white text, 99+ cap),
+   hand-rolled here since neither of those is a bare, icon-agnostic overlay
+   a footer icon can drop in directly. */
+.iconWithBadge {
+  position: relative;
+  display: inline-flex;
+}
+
+.unreadBadge {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: var(--sv-color-error-text);
+  color: var(--sv-color-text-on-error);
+  border-radius: var(--sv-radius-full);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}

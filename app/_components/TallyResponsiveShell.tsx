@@ -9,6 +9,7 @@ interface TallyResponsiveShellProps {
   children: ReactNode;
   detail: ReactNode;
   plugins: DrawerPlugin[];
+  unreadCount: number;
 }
 
 /**
@@ -41,12 +42,17 @@ interface TallyResponsiveShellProps {
  * state (the URL's `?g=`/`?p=` param), passing both `children` and `detail`
  * down and picking one — never testing an unrendered RSC prop for nullness.
  */
-export function TallyResponsiveShell({ children, detail, plugins }: TallyResponsiveShellProps) {
+export function TallyResponsiveShell({
+  children,
+  detail,
+  plugins,
+  unreadCount,
+}: TallyResponsiveShellProps) {
   const isMobile = useIsMobile();
 
   if (isMobile) {
     return (
-      <TallyMobileShell plugins={plugins} detail={detail}>
+      <TallyMobileShell plugins={plugins} unreadCount={unreadCount} detail={detail}>
         {children}
       </TallyMobileShell>
     );
@@ -54,7 +60,7 @@ export function TallyResponsiveShell({ children, detail, plugins }: TallyRespons
 
   return (
     <ThreeColumnLayout sidebarWidth={240} detailWidth={360}>
-      <TallySidebar />
+      <TallySidebar unreadCount={unreadCount} />
       {children}
       {detail}
     </ThreeColumnLayout>

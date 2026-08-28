@@ -1112,6 +1112,101 @@ user's tap would hit:
 `pnpm typecheck`/`eslint`/`prettier --check`/`pnpm design:tokens:check`/
 `pnpm test` (36 tests) all clean.
 
+**2026-08-28 — Notification Center unread-count badge (the last piece of
+Post-MVP item 4, Inbox).** UI-FLOW.md §5's own line: "The unread/dot state
+ties into the platform's real Notification Center (`sdk.notifications.
+list()`) so the sidebar's Inbox item can show an unread count consistent
+with the bell." New `app/_lib/notifications.ts`'s `getUnreadInboxCount()`
+does exactly that — fetched server-side in `(home)/layout.tsx` alongside
+the already-fetched plugin list, threaded through `TallyResponsiveShell`
+to both `TallySidebar` (a trailing numeric pill on the Inbox row) and
+`TallyMobileShell` (an overlay badge on the footer's Inbox icon, plus the
+icon's own `label`/`aria-label` gains "(N unread)" for screen readers,
+matching the platform bell's own pattern of appending unread count to its
+`aria-label` rather than relying on a visually-hidden, `aria-hidden` badge
+alone).
+
+**A real API constraint discovered and worked around, not assumed away**:
+`sdk.notifications.list()`'s own doc comment says plainly "the same real,
+cross-plugin list the platform's own bell shows... **not scoped to the
+calling plugin**." There is no server-side per-plugin filter — every
+plugin's notifications for the current user come back together. Filtered
+client-side (well, server-side in this plugin's own code) to `source ===
+'fs.sovereign.tally'`, at the SDK's own max `limit` (100, host-enforced).
+Documented, not silently accepted: a user with an unusually large
+cross-plugin inbox could theoretically have some of Tally's own
+notifications pushed past that 100-item window, undercounting in that
+edge case — not worth a bigger mechanism (there is no `list()` option to
+avoid it) for a decorative sidebar badge.
+
+**A real UI primitive found and deliberately not adopted, not missed**:
+`@sovereignfs/ui` has a full `NotificationsPanel` component — a
+generalized, presentational bell+dropdown (mark-read/dismiss/clear-all,
+same visual structure as the platform's own `NotificationBell`) built
+specifically so a plugin doesn't hand-roll one. Read it in full before
+deciding: it's a complete interactive notification panel, a materially
+bigger feature than what was asked for here ("the badge tie-in," matching
+UI-FLOW.md's own literal "unread count" framing, not "build an in-app
+bell"). Adopting it is a reasonable *future* task if an in-Tally
+notification panel is ever wanted, but out of scope for this one — noted
+here rather than silently building it anyway or silently ignoring that it
+exists. What *was* borrowed from it: the semantic token pattern for an
+unread badge's text color (`--sv-color-text-on-error`, found via its CSS,
+confirmed against `--sv-color-error-text` for the background) rather than
+a hardcoded `white` — `pnpm design:tokens:check` doesn't actually flag
+bare CSS keyword colors like `white` (confirmed empirically — the
+platform's own `NotificationBell.module.css` and `NotificationsPanel.
+module.css` both use it unflagged), but the token is more correct and
+theme-consistent regardless of what the checker catches.
+
+**Deliberately not live-polled.** The platform bell's own unread count
+updates via a 10s poll + SSE fallback loop — real, but platform-private
+state (`runtime/app/(platform)/_components/NotificationBell.tsx`'s
+module-level shared store, not reachable from a plugin; importing it would
+violate the SDK boundary rule). Tally's own badge is fetched once per
+server render (same request as the rest of the layout), so it's accurate
+as of the last navigation, not updated in real time without one.
+UI-FLOW.md's own phrasing — "consistent with the bell" — reads as "same
+underlying data," not "same refresh cadence," and building an independent
+poll loop for one sidebar badge would be disproportionate.
+
+**Live-verified end-to-end against the real running dev server + real
+database**, not just typecheck. The write side (real cross-user
+notifications reaching Tally's own `sdk.notifications.send()` calls) was
+already fully verified in an earlier task (Notifications + activity log
+wiring) — this pass exercised specifically the *read*/badge side, which
+hadn't existed until now:
+
+- Confirmed via direct query that real, pre-existing unread Tally
+  notifications already sat in the platform's `notifications` table for
+  other seeded users (Dev User, Dev Auditor) from earlier sessions'
+  live-testing — useful confirmation the write path's data was still
+  there, but not usable for testing *this* user's own badge without
+  switching identity.
+- Inserted two realistic test notification rows for the actual
+  logged-in dev session (Dev Owner, confirmed via `/api/auth/get-session`)
+  matching the real `notifications` table schema exactly (checked via
+  `PRAGMA table_info`) — a deliberate, minimal substitute for triggering a
+  real cross-user action, which isn't reachable from a single authenticated
+  browser session.
+- Reloaded: the platform's own bell showed "2", `TallySidebar`'s Inbox row
+  showed a matching "2" badge (desktop, confirmed both visually and via
+  direct DOM inspection — `aria-label="Inbox (2 unread)"`), and
+  `TallyMobileShell`'s footer Inbox icon showed the same "2" (confirmed at
+  a real mobile viewport) — all three numbers agreeing, the literal
+  "consistent with the bell" requirement.
+- Called the platform's own real mark-all-read endpoint (the same one the
+  bell's UI calls), reloaded, and confirmed the badge disappeared from both
+  desktop and mobile on the next render — proving the read state, not just
+  the initial unread state, flows through correctly.
+- Test notification rows deleted afterward (scoped precisely to this
+  session's own inserted rows, by recipient + a distinguishing body prefix)
+  so the pre-existing real unread notifications for other seeded users
+  were left untouched.
+
+`pnpm typecheck`/`eslint`/`prettier --check`/`pnpm design:tokens:check`/
+`pnpm test` (36 tests) all clean.
+
 ---
 
 ## Post-MVP-minus-chrome (v1 scope, not yet scheduled into tasks)
@@ -1132,9 +1227,10 @@ in priority order:
    this design rather than deferred inside it — see Status.
 4. ~~**Inbox**~~ — ✅ shipped 2026-08-27 — cross-group activity feed, then
    `[Resend]`/`[Remind]` actionable rows — see Status below. The
-   Notification Center unread-count tie-in and the sidebar's own unread
-   badge are the one piece still open, a separate UI surface
-   (`TallySidebar.tsx`), not this feed — UI-FLOW.md §5.
+   Notification Center unread-count tie-in and the sidebar's/mobile
+   footer's own unread badge — a separate UI surface (`TallySidebar.tsx`/
+   `TallyMobileShell.tsx`), not this feed — shipped separately, 2026-08-28,
+   see below — UI-FLOW.md §5.
 5. ~~**Settings (account-level)**~~ — ✅ shipped 2026-08-27 — Primary
    Currency — UI-FLOW.md §8. (Per-group settings — name/description/
    currency/dates edit, member management, guest invites — is item 1
