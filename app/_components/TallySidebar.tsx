@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@sovereignfs/ui';
+import { AddExpenseLauncher } from './AddExpenseLauncher';
 import styles from './TallySidebar.module.css';
 
 const NAV = [
@@ -23,9 +24,9 @@ interface TallySidebarProps {
  * Persistent secondary nav — same precedent as Sheets'/Docs' own
  * `SheetsSidebar`/`DocsSidebar`, scoped to `app/(home)/layout.tsx` so it
  * stays mounted across navigation between Overview/Groups/People/Inbox
- * (UI-FLOW.md §2). Settings is pinned to the bottom, visually separated by
- * a spacer + divider — it's account-level (`user_settings`), not ledger
- * content, so it doesn't belong in the same nav block.
+ * (UI-FLOW.md §2). "Add expense" sits in the header as a persistent
+ * action (§2's "not a nav item"); Settings is pinned to the bottom,
+ * visually separated — account-level, not ledger content.
  */
 export function TallySidebar({ unreadCount }: TallySidebarProps) {
   const pathname = usePathname();
@@ -36,6 +37,9 @@ export function TallySidebar({ unreadCount }: TallySidebarProps) {
 
   return (
     <nav className={styles.nav} aria-label="Tally sections">
+      <div className={styles.header}>
+        <AddExpenseLauncher variant="sidebar" />
+      </div>
       <div className={styles.group}>
         {NAV.map((item) => {
           const active = isActive(item.href);

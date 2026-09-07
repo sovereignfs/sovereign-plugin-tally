@@ -45,6 +45,12 @@
   margin: 0;
 }
 
+.statFootnote {
+  font-size: var(--sv-font-size-xs);
+  color: var(--sv-color-text-muted);
+  margin: var(--sv-space-1) 0 0;
+}
+
 .breakdownGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -66,7 +72,7 @@
 
 .viewAllLink {
   font-size: var(--sv-font-size-sm);
-  color: var(--sv-color-text-accent);
+  color: var(--sv-color-accent);
   text-decoration: none;
 }
 
@@ -104,8 +110,8 @@ a.breakdownRow:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--sv-space-8);
+  height: var(--sv-space-8);
   flex-shrink: 0;
   border-radius: var(--sv-radius-md);
   background: var(--sv-color-surface-sunken);

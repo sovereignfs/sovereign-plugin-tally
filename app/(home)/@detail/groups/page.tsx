@@ -1,14 +1,18 @@
 import Link from 'next/link';
-import { BalanceChip, Icon } from '@sovereignfs/ui';
+import { EmptyState, StatusBadge } from '@sovereignfs/ui';
+import { formatActivityDate, formatMoney } from '../../../_lib/activity';
+import { deleteExpenseAction } from '../../../_lib/expenses';
 import { getGroupDetail } from '../../../_lib/groups';
-import { groupBalancesByCurrency, simplifyDebts } from '../../../_lib/balances';
 import { GroupAccessError } from '../../../_lib/membership';
+import { deleteSettlementAction } from '../../../_lib/settlements';
 import {
   addMemberAction,
   archiveGroupAction,
   deleteGroupAction,
   getGroupSettings,
+  leaveGroupAction,
   removeMemberAction,
+  reopenGroupAction,
   resendGuestInviteAction,
   searchGroupDirectoryUsers,
   updateGroupDetailsAction,
@@ -16,54 +20,86 @@ import {
 } from '../../../_lib/group-settings';
 import { ActivityFeed } from '../../../_components/ActivityFeed';
 import { BalanceChipStack } from '../../../_components/BalanceChipStack';
-import { ExpenseForm } from '../../../_components/ExpenseForm';
+import { DetailBackLink } from '../../../_components/DetailBackLink';
+import { AddExpenseButton } from '../../../_components/ExpenseDialog';
 import { GroupLifecycleActions } from '../../../_components/GroupLifecycleActions';
 import { GroupSettingsButton } from '../../../_components/GroupSettingsButton';
+import { LeaveGroupButton } from '../../../_components/LeaveGroupButton';
 import { RecordSettlementDialog } from '../../../_components/RecordSettlementDialog';
 import { SettleUpButton } from '../../../_components/SettleUpButton';
+import { SpendBars } from '../../../_components/SpendBars';
 import styles from './page.module.css';
 
 /**
  * The `@detail` parallel-route slot for `/tally/groups` — renders `null`
- * (nothing, `ThreeColumnLayout` collapses to 2 columns) unless `?g=<id>`
- * is present, per `app/(home)/layout.tsx`'s doc comment. Reads the *same*
- * `searchParams` the main `groups/page.tsx` reads — both are independent
- * pages matching the identical URL, not a parent/child pair.
+ * (nothing; `ThreeColumnLayout` collapses to 2 columns) unless `?g=<id>`
+ * is present. Reads the *same* `searchParams` the main `groups/page.tsx`
+ * reads — both are independent pages matching the identical URL.
  *
- * Activity feed (grouped by month, merged expenses + settlements) added
- * 2026-08-27 in place of the earlier flat "Expenses" list, alongside a
- * balance-summary headline and a general `RecordSettlementDialog` CTA —
- * requested directly against a Splitwise reference screenshot.
+ * Section order follows what a member most often came for: their balance,
+ * everyone's balances, the suggested payments, then the (potentially long)
+ * activity feed, then analytics.
  */
 export default async function GroupDetailSlot({
   searchParams,
 }: {
-  searchParams: Promise<{ g?: string }>;
+  searchParams: Promise<{ g?: string; filter?: string }>;
 }) {
-  const { g: selectedGroupId } = await searchParams;
+  const { g: selectedGroupId, filter } = await searchParams;
   if (!selectedGroupId) return null;
+  const backHref = filter ? `/tally/groups?filter=${encodeURIComponent(filter)}` : '/tally/groups';
 
-  // `getGroupDetail` throws `GroupAccessError` (not a null return) when the
-  // id doesn't resolve to an active membership — the same shape covers "no
-  // access" and "deleted" (deleteGroupAction removes group_members too, so
-  // a stale `?g=<id>` link to an already-deleted group — a bookmark,
-  // browser history, back/forward after the post-delete redirect — hits
-  // this exact path). Caught here so a stale link renders nothing, same as
-  // an unrecognized id, instead of crashing to Next's generic error
-  // boundary; found live testing deleteGroupAction, not anticipated during
-  // review.
+  // `getGroupDetail` throws `GroupAccessError` when the id doesn't resolve
+  // to an active membership — covers "no access", "deleted", and "left".
+  // A stale link (bookmark, history, a notification about a group you've
+  // since left) renders a small not-found state with a way back, instead
+  // of a blank pane — on mobile, a blank pane is a dead end.
   let group;
   try {
     group = await getGroupDetail(selectedGroupId);
   } catch (error) {
-    if (error instanceof GroupAccessError) return null;
-    throw error;
+    if (!(error instanceof GroupAccessError)) throw error;
+    group = null;
   }
-  if (!group) return null;
+  if (!group) {
+    return (
+      <div className={styles.detail}>
+        <div className={styles.header}>
+          <h2 className={styles.title}>Group not found</h2>
+          <DetailBackLink href={backHref} label="Groups" />
+        </div>
+        <EmptyState
+          icon="layers"
+          heading="This group isn't available"
+          description="It may have been deleted, or you may no longer be a member."
+          action={
+            <Link href={backHref} className={styles.textLink}>
+              Back to groups
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
 
-  const balancesByCurrency = groupBalancesByCurrency(group.balances);
+  const isClosed = group.archivedAt !== null;
   const labelByMemberId = new Map(group.members.map((m) => [m.memberId, m.label]));
   const memberOptions = group.members.map((m) => ({ memberId: m.memberId, label: m.label }));
+  const target = {
+    groupId: group.id,
+    defaultCurrency: group.defaultCurrency,
+    members: memberOptions,
+    myMemberId: group.myMemberId,
+  };
+  const dateRange =
+    group.startDate || group.endDate
+      ? [
+          group.startDate ? formatActivityDate(group.startDate, { withYear: true }) : null,
+          group.endDate ? formatActivityDate(group.endDate, { withYear: true }) : null,
+        ]
+          .filter(Boolean)
+          .join(' – ')
+      : null;
 
   return (
     <div className={styles.detail}>
@@ -73,10 +109,11 @@ export default async function GroupDetailSlot({
           {group.myRole === 'owner' && (
             <GroupLifecycleActions
               groupName={group.name}
-              isArchived={group.archivedAt !== null}
+              isArchived={isClosed}
               hasHistory={group.hasHistory}
-              hasOutstandingBalance={group.balances.some((b) => b.amountCents !== 0)}
+              hasOutstandingBalance={group.hasOutstandingBalance}
               archiveAction={archiveGroupAction.bind(null, group.id)}
+              reopenAction={reopenGroupAction.bind(null, group.id)}
               deleteAction={deleteGroupAction.bind(null, group.id)}
             />
           )}
@@ -91,29 +128,39 @@ export default async function GroupDetailSlot({
               updateRoleAction={updateMemberRoleAction.bind(null, group.id)}
             />
           )}
-          <Link href="/tally/groups" className={styles.closeLink} aria-label="Back to groups">
-            <Icon name="x" size="sm" aria-hidden className={styles.closeIconDesktop} />
-            <Icon name="chevron-left" size="sm" aria-hidden className={styles.closeIconMobile} />
-            <span className={styles.closeLabelMobile}>Groups</span>
-          </Link>
+          <DetailBackLink href={backHref} label="Groups" />
         </div>
       </div>
 
+      {(group.description || dateRange || isClosed) && (
+        <div className={styles.about}>
+          {group.description && <p className={styles.description}>{group.description}</p>}
+          <p className={styles.meta}>
+            {[
+              dateRange,
+              `${group.members.length} member${group.members.length === 1 ? '' : 's'}`,
+              `Default currency ${group.defaultCurrency}`,
+              isClosed ? 'Closed — read-only until reopened' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </p>
+        </div>
+      )}
+
       <div className={styles.actionsRow}>
-        <ExpenseForm
-          groupId={group.id}
-          defaultCurrency={group.defaultCurrency}
-          members={memberOptions}
-        />
+        <AddExpenseButton target={target} disabled={isClosed} />
         <RecordSettlementDialog
           groupId={group.id}
           defaultCurrency={group.defaultCurrency}
           members={memberOptions}
+          myMemberId={group.myMemberId}
+          disabled={isClosed}
         />
       </div>
 
       <div className={styles.section}>
-        <h3 className={styles.sectionHeading}>Balance summary</h3>
+        <h3 className={styles.sectionHeading}>Your balance</h3>
         {group.myBalances.length === 0 ? (
           <p className={styles.placeholder}>You&rsquo;re settled up in this group.</p>
         ) : (
@@ -129,63 +176,122 @@ export default async function GroupDetailSlot({
           <p className={styles.placeholder}>No members yet.</p>
         ) : (
           <ul className={styles.memberList}>
-            {group.members.map((member) => {
-              const balance = group.balances.find((b) => b.memberId === member.memberId);
-              return (
-                <li key={member.memberId} className={styles.memberRow}>
-                  <span className={styles.memberName}>
-                    {member.label}
-                    {member.role === 'owner' && <span className={styles.ownerTag}>Owner</span>}
-                  </span>
-                  <BalanceChip
-                    amountCents={balance?.amountCents ?? 0}
-                    currency={balance?.currency ?? group.defaultCurrency}
-                  />
-                </li>
-              );
-            })}
+            {group.members.map((member) => (
+              <li key={member.memberId} className={styles.memberRow}>
+                <span className={styles.memberName}>
+                  {member.label}
+                  {member.memberId === group.myMemberId && (
+                    <span className={styles.memberTag}>you</span>
+                  )}
+                  {member.role === 'owner' && <span className={styles.memberTag}>Owner</span>}
+                  {member.kind === 'guest' && <span className={styles.memberTag}>Guest</span>}
+                </span>
+                {member.balances.length === 0 ? (
+                  <StatusBadge status="unmodified">Settled up</StatusBadge>
+                ) : (
+                  <BalanceChipStack balances={member.balances} />
+                )}
+              </li>
+            ))}
           </ul>
         )}
       </div>
 
-      <div className={styles.section}>
-        <h3 className={styles.sectionHeading}>Activity</h3>
-        <ActivityFeed months={group.activity} />
-      </div>
-
-      {Array.from(balancesByCurrency.entries()).map(([currency, balances]) => {
-        const suggestions = simplifyDebts(new Map(balances));
-        if (suggestions.length === 0) return null;
-        return (
-          <div key={currency} className={styles.section}>
-            <h3 className={styles.sectionHeading}>Settle up — {currency}</h3>
-            <ul className={styles.suggestionList}>
-              {suggestions.map((payment, index) => (
-                <li key={index} className={styles.suggestionRow}>
+      {group.suggestions.length > 0 && (
+        <div className={styles.section}>
+          <h3 className={styles.sectionHeading}>
+            Settle up
+            <span className={styles.sectionHint}>
+              {group.simplifyDebts ? 'Simplified — fewest payments' : 'Who owes whom, per person'}
+            </span>
+          </h3>
+          <ul className={styles.suggestionList}>
+            {group.suggestions.map((payment) => {
+              const fromLabel = labelByMemberId.get(payment.fromMemberId) ?? 'Someone';
+              const toLabel = labelByMemberId.get(payment.toMemberId) ?? 'someone';
+              return (
+                <li
+                  key={`${payment.fromMemberId}:${payment.toMemberId}:${payment.currency}`}
+                  className={styles.suggestionRow}
+                >
                   <span>
-                    {labelByMemberId.get(payment.fromMemberId) ?? 'Someone'} owes{' '}
-                    {labelByMemberId.get(payment.toMemberId) ?? 'someone'}
-                    {/* Plain amount, not BalanceChip — a suggested payment
-                        has no "owed to them / they owe" direction of its
-                        own to color-code; the prose already states it. */}
+                    {payment.fromMemberId === group.myMemberId ? 'You owe' : `${fromLabel} owes`}{' '}
+                    {payment.toMemberId === group.myMemberId ? 'you' : toLabel}
                     <span className={styles.suggestionAmount}>
                       {' '}
-                      {currency} {(payment.amountCents / 100).toFixed(2)}
+                      {formatMoney(payment.amountCents, payment.currency)}
                     </span>
                   </span>
-                  <SettleUpButton
-                    groupId={group.id}
-                    fromMemberId={payment.fromMemberId}
-                    toMemberId={payment.toMemberId}
-                    amountCents={payment.amountCents}
-                    currency={currency}
-                  />
+                  {!isClosed && (
+                    <SettleUpButton
+                      groupId={group.id}
+                      fromMemberId={payment.fromMemberId}
+                      fromLabel={fromLabel}
+                      toMemberId={payment.toMemberId}
+                      toLabel={toLabel}
+                      amountCents={payment.amountCents}
+                      currency={payment.currency}
+                    />
+                  )}
                 </li>
-              ))}
-            </ul>
-          </div>
-        );
-      })}
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      <div className={styles.section}>
+        <h3 className={styles.sectionHeading}>Activity</h3>
+        <ActivityFeed
+          months={group.activity}
+          editContext={{
+            target,
+            canEdit: !isClosed,
+            deleteExpense: deleteExpenseAction,
+            deleteSettlement: deleteSettlementAction,
+          }}
+        />
+      </div>
+
+      {group.analytics.byCategory.length > 0 && (
+        <div className={styles.section}>
+          <h3 className={styles.sectionHeading}>Spend by category</h3>
+          <SpendBars
+            items={group.analytics.byCategory.map((c) => ({
+              key: `${c.currency}:${c.label}`,
+              label: c.label,
+              currency: c.currency,
+              amountCents: c.amountCents,
+            }))}
+            emptyLabel="No expenses yet."
+          />
+        </div>
+      )}
+
+      {group.analytics.byMonth.length > 0 && (
+        <div className={styles.section}>
+          <h3 className={styles.sectionHeading}>Last six months</h3>
+          <SpendBars
+            items={group.analytics.byMonth.map((m) => ({
+              key: `${m.currency}:${m.monthKey}`,
+              label: m.label,
+              currency: m.currency,
+              amountCents: m.amountCents,
+            }))}
+            emptyLabel="No expenses in the last six months."
+          />
+        </div>
+      )}
+
+      {group.myMemberId && (
+        <div className={styles.footerActions}>
+          <LeaveGroupButton
+            groupName={group.name}
+            blockedReason={group.leaveBlockedReason}
+            leaveAction={leaveGroupAction.bind(null, group.id)}
+          />
+        </div>
+      )}
     </div>
   );
 }

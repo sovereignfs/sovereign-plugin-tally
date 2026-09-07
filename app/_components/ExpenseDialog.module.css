@@ -1,0 +1,37 @@
+.twoUp {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sv-space-3);
+}
+
+@media (max-width: 480px) {
+  .twoUp {
+    grid-template-columns: 1fr;
+  }
+}
+
+.inlineToggle {
+  margin-top: calc(-1 * var(--sv-space-2));
+}
+
+.payerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+
+.payerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sv-space-3);
+}
+
+.payerName {
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

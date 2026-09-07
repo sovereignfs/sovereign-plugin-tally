@@ -33,6 +33,11 @@ export const groups = sqliteTable('groups', {
   /** Set by "Close group" (SPEC.md §7). Hard delete is a separate,
    *  narrower path — see `SPEC.md` §7 — not a field on this table. */
   archivedAt: integer('archived_at'),
+  /** Whether balance suggestions and "who owes whom" views use greedy
+   *  debt simplification (`simplifyDebts`) or plain pairwise balances —
+   *  the Splitwise "Simplify debts" group setting. Off by default: pairwise
+   *  balances only ever name people you actually transacted with. */
+  simplifyDebts: integer('simplify_debts', { mode: 'boolean' }).notNull().default(false),
 });
 
 export type GroupRow = typeof groups.$inferSelect;

@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ThreeColumnLayout, useIsMobile } from '@sovereignfs/ui';
 import { TallySidebar } from './TallySidebar';
 import { TallyMobileShell, type DrawerPlugin } from './TallyMobileShell';
@@ -49,6 +50,16 @@ export function TallyResponsiveShell({
   unreadCount,
 }: TallyResponsiveShellProps) {
   const isMobile = useIsMobile();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // Same URL-driven test `TallyMobileShell` uses: the `detail` slot's
+  // resolved output can't be inspected for emptiness from here (see the
+  // doc comment above), but whether a group/person is selected can. Without
+  // this the desktop layout kept an empty 360px third column on every
+  // route — visible as a bordered blank pane.
+  const hasDetailSelection =
+    (pathname.startsWith('/tally/groups') && searchParams.has('g')) ||
+    (pathname.startsWith('/tally/people') && searchParams.has('p'));
 
   if (isMobile) {
     return (
@@ -59,10 +70,10 @@ export function TallyResponsiveShell({
   }
 
   return (
-    <ThreeColumnLayout sidebarWidth={240} detailWidth={360}>
+    <ThreeColumnLayout sidebarWidth={240} detailWidth={400}>
       <TallySidebar unreadCount={unreadCount} />
       {children}
-      {detail}
+      {hasDetailSelection ? detail : null}
     </ThreeColumnLayout>
   );
 }

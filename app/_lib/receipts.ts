@@ -2,6 +2,19 @@ import { sdk } from '@sovereignfs/sdk';
 
 const RECEIPT_URL_EXPIRES_SECONDS = 1800;
 
+/** `receipts/<expenseId>/<safe filename>` — the filename is a client-supplied
+ *  string, so anything outside a conservative character set is replaced
+ *  before it becomes part of a storage key. */
+export function receiptStorageKeyFor(expenseId: string, filename: string): string {
+  const base = filename.split(/[\\/]/).pop() ?? 'receipt';
+  const safe =
+    base
+      .replace(/[^A-Za-z0-9._-]+/g, '_')
+      .replace(/^\.+/, '')
+      .slice(-80) || 'receipt';
+  return `receipts/${expenseId}/${safe}`;
+}
+
 /**
  * Batch-resolves a short-lived view URL per expense with an attached
  * receipt (SPEC.md §8) — shared by `groups.ts`'s per-group Activity feed

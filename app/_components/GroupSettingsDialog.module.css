@@ -19,7 +19,7 @@
 .sectionHeading {
   margin: 0;
   font-size: var(--sv-font-size-sm);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -53,8 +53,13 @@
 .memberName {
   margin: 0;
   font-size: var(--sv-font-size-sm);
-  font-weight: 500;
+  font-weight: var(--sv-font-weight-medium);
   color: var(--sv-color-text-primary);
+}
+
+.memberYou {
+  color: var(--sv-color-text-muted);
+  font-weight: var(--sv-font-weight-regular);
 }
 
 .memberEmail,
@@ -76,7 +81,7 @@
   flex-direction: column;
   gap: var(--sv-space-3);
   padding-top: var(--sv-space-3);
-  border-top: 1px solid var(--sv-color-border);
+  border-top: var(--sv-border-width-hairline) solid var(--sv-color-border);
 }
 
 .addModeToggle {
@@ -99,11 +104,11 @@
   list-style: none;
   display: grid;
   gap: var(--sv-space-1);
-  border: 1px solid var(--sv-color-border);
+  border: var(--sv-border-width-hairline) solid var(--sv-color-border);
   border-radius: var(--sv-radius-md);
   background: var(--sv-color-surface-raised);
   box-shadow: var(--sv-shadow-card);
-  max-height: 220px;
+  max-height: calc(var(--sv-space-16) * 3.5);
   overflow-y: auto;
 }
 

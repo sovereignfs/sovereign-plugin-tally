@@ -15,7 +15,23 @@
   font-size: var(--sv-font-size-sm);
   padding: var(--sv-space-2) var(--sv-space-3);
   border-radius: var(--sv-radius-md);
-  border: 1px solid var(--sv-color-error-border);
+  border: var(--sv-border-width-hairline) solid var(--sv-color-error-border);
   background-color: var(--sv-color-error-surface);
   color: var(--sv-color-error-text);
+}
+
+.feedbackWarning {
+  margin: 0;
+  font-size: var(--sv-font-size-sm);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border-radius: var(--sv-radius-md);
+  border: var(--sv-border-width-hairline) solid var(--sv-color-warning-border);
+  background-color: var(--sv-color-warning-surface);
+  color: var(--sv-color-warning-text);
+}
+
+.feedbackSuccess {
+  margin: 0;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-secondary);
 }

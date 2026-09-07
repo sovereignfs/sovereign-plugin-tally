@@ -185,6 +185,9 @@ async function main(): Promise<void> {
     name: 'Roomies',
     description: 'Shared apartment expenses.',
     defaultCurrency: 'USD',
+    // Exercises the simplified-debts mode; "Bali Trip" below stays on the
+    // pairwise default so both `counterpartiesForGroup` branches get real data.
+    simplifyDebts: true,
     createdByUserId: users.owner.id,
     createdAt: daysAgo(30),
     updatedAt: daysAgo(30),

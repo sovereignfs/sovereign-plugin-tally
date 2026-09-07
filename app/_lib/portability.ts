@@ -16,6 +16,7 @@ import {
   settlements,
   userSettings,
 } from '../_db/schema';
+import { computeNetBalances } from './balances';
 import type { Db } from './context';
 import { newId } from './ids';
 
@@ -55,6 +56,7 @@ interface ExportGroup {
   startDate: number | null;
   endDate: number | null;
   archivedAt: number | null;
+  simplifyDebts?: boolean;
   createdAt: number;
 }
 
@@ -83,6 +85,11 @@ interface ExportExpense {
   occurredOn: number;
   notes: string | null;
   splitMethod: string;
+  /** Relative path of this expense's receipt inside the section's `blobs`
+   *  (`receipts/<expenseId>/<filename>`), when one was attached and the
+   *  export included files. */
+  receiptBlobPath?: string | null;
+  receiptContentType?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -189,6 +196,30 @@ async function exportTallyData(ctx: ExportContext): Promise<PluginExportSection>
     realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
   const nameByUserId = new Map(resolvedUsers.map((u) => [u.id, u.name ?? u.email]));
 
+  // Receipt images travel as section blobs (RFC 0007's `blobs`), keyed by
+  // their storage key, when the user asked for files — a restore without
+  // them still has every ledger row, just no attachment link.
+  const blobs: Record<string, Uint8Array> = {};
+  const blobWarnings: string[] = [];
+  const receiptByExpenseId = new Map<string, { path: string; contentType: string }>();
+  if (ctx.options.includeFiles) {
+    for (const e of expenseRows) {
+      if (!e.receiptStorageKey) continue;
+      try {
+        const object = await sdk.storage.get(e.receiptStorageKey);
+        if (!object) continue;
+        const bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+        blobs[e.receiptStorageKey] = bytes;
+        receiptByExpenseId.set(e.id, {
+          path: e.receiptStorageKey,
+          contentType: object.contentType,
+        });
+      } catch {
+        blobWarnings.push(`The receipt for "${e.description}" could not be read and was skipped.`);
+      }
+    }
+  }
+
   const data: TallyExportData = {
     primaryCurrency: settingsRows[0]?.primaryCurrency ?? null,
     groups: groupRows.map((g) => ({
@@ -199,6 +230,7 @@ async function exportTallyData(ctx: ExportContext): Promise<PluginExportSection>
       startDate: g.startDate,
       endDate: g.endDate,
       archivedAt: g.archivedAt,
+      simplifyDebts: g.simplifyDebts,
       createdAt: g.createdAt,
     })),
     members: memberRows.map((m) => ({
@@ -223,6 +255,8 @@ async function exportTallyData(ctx: ExportContext): Promise<PluginExportSection>
       occurredOn: e.occurredOn,
       notes: e.notes,
       splitMethod: e.splitMethod,
+      receiptBlobPath: receiptByExpenseId.get(e.id)?.path ?? null,
+      receiptContentType: receiptByExpenseId.get(e.id)?.contentType ?? null,
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
     })),
@@ -251,13 +285,22 @@ async function exportTallyData(ctx: ExportContext): Promise<PluginExportSection>
   };
 
   const hasOtherMembers = data.members.some((m) => !m.isExportingUser);
-  const warnings = hasOtherMembers
-    ? [
-        'Other group members are restored as guests on import, using their name at export time — their original accounts are not re-linked. Re-add them as real members from Group settings after importing, if needed.',
-      ]
-    : undefined;
+  const warnings = [
+    ...(hasOtherMembers
+      ? [
+          'Other group members are restored as guests on import, using their name at export time — their original accounts are not re-linked. Re-add them as real members from Group settings after importing, if needed.',
+        ]
+      : []),
+    ...blobWarnings,
+  ];
 
-  return { pluginId: PLUGIN_ID, schemaVersion: EXPORT_SCHEMA_VERSION, data, warnings };
+  return {
+    pluginId: PLUGIN_ID,
+    schemaVersion: EXPORT_SCHEMA_VERSION,
+    data,
+    blobs: Object.keys(blobs).length > 0 ? blobs : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
 }
 
 // ---- Import ----
@@ -279,6 +322,8 @@ function isTallyExportData(value: unknown): value is TallyExportData {
     Array.isArray(c.groups) &&
     Array.isArray(c.members) &&
     Array.isArray(c.expenses) &&
+    Array.isArray(c.payers) &&
+    Array.isArray(c.splits) &&
     Array.isArray(c.settlements)
   );
 }
@@ -291,6 +336,37 @@ async function importTallyData(section: PluginExportSection, ctx: ImportContext)
   const db = (await sdk.db.getClient()) as Db;
   const ts = Math.floor(Date.now() / 1000);
 
+  // Receipts first: a storage put outside the ledger transaction below is
+  // harmless if the transaction then fails (an orphaned object, not a
+  // broken ledger), whereas the reverse would leave rows pointing at
+  // nothing.
+  const receiptKeyByExpenseId = new Map<string, string>();
+  for (const e of data.expenses) {
+    const bytes = e.receiptBlobPath ? section.blobs?.[e.receiptBlobPath] : undefined;
+    if (!bytes || !e.receiptContentType) continue;
+    const newExpenseId = ctx.remapId(e.id);
+    const filename = e.receiptBlobPath?.split('/').pop() ?? 'receipt';
+    const key = `receipts/${newExpenseId}/${filename}`;
+    try {
+      await sdk.storage.put({ key, body: bytes, contentType: e.receiptContentType });
+      receiptKeyByExpenseId.set(e.id, key);
+    } catch {
+      // The expense is still restored, just without its attachment.
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    await importRows(tx as unknown as Db, data, ctx, ts, receiptKeyByExpenseId);
+  });
+}
+
+async function importRows(
+  db: Db,
+  data: TallyExportData,
+  ctx: ImportContext,
+  ts: number,
+  receiptKeyByExpenseId: Map<string, string>,
+): Promise<void> {
   if (data.primaryCurrency) {
     await db
       .insert(userSettings)
@@ -315,6 +391,7 @@ async function importTallyData(section: PluginExportSection, ctx: ImportContext)
       defaultCurrency: g.defaultCurrency,
       startDate: g.startDate,
       endDate: g.endDate,
+      simplifyDebts: g.simplifyDebts ?? false,
       createdByUserId: ctx.userId,
       createdAt: g.createdAt,
       updatedAt: ts,
@@ -362,6 +439,7 @@ async function importTallyData(section: PluginExportSection, ctx: ImportContext)
       occurredOn: e.occurredOn,
       notes: e.notes,
       splitMethod: e.splitMethod,
+      receiptStorageKey: receiptKeyByExpenseId.get(e.id) ?? null,
       createdByUserId: ctx.userId,
       createdAt: e.createdAt,
       updatedAt: ts,
@@ -411,17 +489,80 @@ async function importTallyData(section: PluginExportSection, ctx: ImportContext)
 // ---- Delete ----
 // SPEC.md §7: a shared ledger's rows are joint records other members'
 // balances depend on — deleting them on this user's account deletion would
-// silently corrupt every other member's math (an expense missing its payer,
-// or a split missing the person who owed it). Every group_members/expenses/
-// expense_payers/expense_splits/settlements row is left in place entirely,
-// exactly as already designed there; only this user's own personal
-// preference row (not joint data) is cleaned up. A real hard block for a
-// non-zero balance was decided but found not buildable as a Tally-only
-// change (`provideDelete` runs after deletion is already committed, with no
-// veto mechanism) — flagged upstream in SPEC.md §7 as needing a new
-// platform-level RFC, not silently dropped.
+// silently corrupt every other member's math. Every expense/payer/split/
+// settlement row is left in place. What *does* happen, so the remaining
+// members aren't stranded:
+//
+// - Each of the user's active memberships is ended (`leftAt`) when their
+//   balance in that group is zero — exactly what "Leave group" does — so
+//   they stop appearing as a live "Unknown member" in balances and member
+//   counts. A membership with an outstanding balance stays active, still
+//   attributed, so the debt remains visible to the others.
+// - Where the user was a group's only owner, the longest-standing remaining
+//   real member is promoted to owner. Without this the group would have no
+//   one able to add members, close it, or change settings — a permanent
+//   lockout with no recovery path.
+// - The user's own personal settings row (not joint data) is deleted.
+//
+// A real hard block for a non-zero balance was decided but is not buildable
+// as a Tally-only change (`provideDelete` runs after deletion is already
+// committed, with no veto mechanism) — flagged upstream in SPEC.md §7.
 async function deleteTallyData(ctx: DeletionContext): Promise<DeletionResult> {
   const db = ctx.db as Db;
+  const errors: string[] = [];
+  const ts = Math.floor(Date.now() / 1000);
+
+  const memberships = await db
+    .select({ id: groupMembers.id, groupId: groupMembers.groupId, role: groupMembers.role })
+    .from(groupMembers)
+    .where(
+      and(
+        eq(groupMembers.userId, ctx.userId),
+        eq(groupMembers.tenantId, ctx.tenantId),
+        eq(groupMembers.kind, 'user'),
+        isNull(groupMembers.leftAt),
+      ),
+    );
+
+  for (const membership of memberships) {
+    try {
+      const otherMembers = await db
+        .select({
+          id: groupMembers.id,
+          kind: groupMembers.kind,
+          role: groupMembers.role,
+          joinedAt: groupMembers.joinedAt,
+        })
+        .from(groupMembers)
+        .where(
+          and(
+            eq(groupMembers.groupId, membership.groupId),
+            eq(groupMembers.tenantId, ctx.tenantId),
+            isNull(groupMembers.leftAt),
+          ),
+        );
+      const otherUsers = otherMembers.filter((m) => m.id !== membership.id && m.kind === 'user');
+
+      if (membership.role === 'owner' && !otherUsers.some((m) => m.role === 'owner')) {
+        const successor = [...otherUsers].sort((a, b) => a.joinedAt - b.joinedAt)[0];
+        if (successor) {
+          await db
+            .update(groupMembers)
+            .set({ role: 'owner' })
+            .where(eq(groupMembers.id, successor.id));
+        }
+      }
+
+      if (!(await memberHasBalance(db, membership.groupId, membership.id))) {
+        await db.update(groupMembers).set({ leftAt: ts }).where(eq(groupMembers.id, membership.id));
+      }
+    } catch (error) {
+      errors.push(
+        `Group ${membership.groupId}: ${error instanceof Error ? error.message : 'cleanup failed'}`,
+      );
+    }
+  }
+
   const existing = await db
     .select({ userId: userSettings.userId })
     .from(userSettings)
@@ -431,5 +572,52 @@ async function deleteTallyData(ctx: DeletionContext): Promise<DeletionResult> {
       .delete(userSettings)
       .where(and(eq(userSettings.userId, ctx.userId), eq(userSettings.tenantId, ctx.tenantId)));
   }
-  return { deleted: existing.length };
+  return { deleted: existing.length, errors: errors.length > 0 ? errors : undefined };
+}
+
+/** Same check as `membership.ts`'s `hasNonZeroBalance`, reimplemented on the
+ *  deletion context's own client rather than importing the request-scoped
+ *  helper (whose `Db` is the same shape but arrives via `getContext()`). */
+async function memberHasBalance(db: Db, groupId: string, memberId: string): Promise<boolean> {
+  const [groupExpenses, memberPayers, memberSplits, groupSettlements] = await Promise.all([
+    db
+      .select({ id: expenses.id, currency: expenses.currency, deletedAt: expenses.deletedAt })
+      .from(expenses)
+      .where(eq(expenses.groupId, groupId)),
+    db
+      .select({
+        expenseId: expensePayers.expenseId,
+        memberId: expensePayers.memberId,
+        amountCents: expensePayers.amountCents,
+      })
+      .from(expensePayers)
+      .where(eq(expensePayers.memberId, memberId)),
+    db
+      .select({
+        expenseId: expenseSplits.expenseId,
+        memberId: expenseSplits.memberId,
+        shareAmountCents: expenseSplits.shareAmountCents,
+      })
+      .from(expenseSplits)
+      .where(eq(expenseSplits.memberId, memberId)),
+    db
+      .select({
+        fromMemberId: settlements.fromMemberId,
+        toMemberId: settlements.toMemberId,
+        amountCents: settlements.amountCents,
+        currency: settlements.currency,
+        deletedAt: settlements.deletedAt,
+      })
+      .from(settlements)
+      .where(eq(settlements.groupId, groupId)),
+  ]);
+  const balances = computeNetBalances({
+    expenses: groupExpenses,
+    payers: memberPayers,
+    splits: memberSplits,
+    settlements: groupSettlements.filter(
+      (s) => s.fromMemberId === memberId || s.toMemberId === memberId,
+    ),
+  });
+  return balances.some((b) => b.memberId === memberId && b.amountCents !== 0);
 }

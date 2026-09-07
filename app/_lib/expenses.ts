@@ -2,93 +2,35 @@
 
 import { and, eq, isNull } from 'drizzle-orm';
 import { headers } from 'next/headers';
-import { revalidatePath } from 'next/cache';
 import { sdk } from '@sovereignfs/sdk';
 import { expensePayers, expenseSplits, expenses, groupMembers } from '../_db/schema';
-import { CATEGORY_OPTIONS } from './categories';
-import type { ActionResult } from './context';
-import { getContext, now } from './context';
+import { formatMoney } from './activity';
+import type { ActionResult, Db } from './context';
+import { getContext, now, revalidateTallyViews } from './context';
+import { MAX_RECEIPT_BYTES, parseExpenseInput, type RawExpenseInput } from './expense-input';
 import { newId } from './ids';
-import { requireGroupMember } from './membership';
-import { distributeByWeights } from './rounding';
-
-const VALID_CATEGORIES = new Set<string>(CATEGORY_OPTIONS.map((c) => c.value));
+import { requireGroupMember, requireGroupOpen, runGuarded } from './membership';
+import { receiptStorageKeyFor } from './receipts';
 
 export type { ActionResult };
 
-/**
- * One participant's raw input, as collected client-side and sent as a
- * JSON blob (see `ExpenseForm`'s doc comment for why: a dynamic per-member
- * weight/amount list doesn't map cleanly onto plain FormData field names).
- *
- * - 'equal': `weight` ignored, every participant gets weight 1.
- * - 'percentage': `weight` is a plain 0–100 number (not yet basis points —
- *   this file multiplies by 100 before calling `distributeByWeights` and
- *   before storing `shareUnits`, matching SPEC.md §3's basis-point convention).
- * - 'shares': `weight` is the raw share count (may be fractional).
- * - 'amount': `amountCents` is the participant's exact resolved share —
- *   no weight-based distribution happens for this method at all.
- */
-interface ParticipantInput {
-  memberId: string;
-  weight?: number;
-  amountCents?: number;
+function readRawInput(formData: FormData): RawExpenseInput {
+  const field = (name: string) => String(formData.get(name) ?? '');
+  return {
+    description: field('description'),
+    amountCents: field('amountCents'),
+    currency: field('currency'),
+    category: field('category'),
+    occurredOn: field('occurredOn'),
+    notes: field('notes'),
+    splitMethod: field('splitMethod'),
+    payers: field('payers'),
+    participants: field('participants'),
+  };
 }
 
-/**
- * v1 scoping decision, tracked here rather than silently assumed: a
- * single payer per expense. `expense_payers` supports more than one
- * (SPEC.md §3, for a large bill two people split paying), but multi-payer
- * input is a real added form-complexity that doesn't block proving the
- * core split mechanic — a real future addition, not an oversight.
- */
-export async function createExpenseAction(
-  _prevState: ActionResult | null,
-  formData: FormData,
-): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-
-  const groupId = String(formData.get('groupId') ?? '');
-  const description = String(formData.get('description') ?? '').trim();
-  const amountCents = Number(formData.get('amountCents') ?? '');
-  const currency = String(formData.get('currency') ?? '')
-    .trim()
-    .toUpperCase();
-  const categoryInput = String(formData.get('category') ?? '').trim();
-  const category = categoryInput && VALID_CATEGORIES.has(categoryInput) ? categoryInput : null;
-  const occurredOnDate = String(formData.get('occurredOn') ?? '');
-  const splitMethod = String(formData.get('splitMethod') ?? '');
-  const payerMemberId = String(formData.get('payerMemberId') ?? '');
-  const participantsRaw = String(formData.get('participants') ?? '[]');
-
-  if (!groupId) return { ok: false, error: 'Missing group.' };
-  await requireGroupMember(db, tenantId, userId, groupId);
-
-  if (!description) return { ok: false, error: 'Enter a description.' };
-  if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return { ok: false, error: 'Enter a valid amount.' };
-  }
-  if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: 'Choose a currency.' };
-  if (!['equal', 'amount', 'percentage', 'shares'].includes(splitMethod)) {
-    return { ok: false, error: 'Choose a split method.' };
-  }
-  const occurredOn = occurredOnDate ? Math.floor(new Date(occurredOnDate).getTime() / 1000) : now();
-  if (!Number.isFinite(occurredOn)) return { ok: false, error: 'Enter a valid date.' };
-
-  let participants: ParticipantInput[];
-  try {
-    participants = JSON.parse(participantsRaw);
-  } catch {
-    return { ok: false, error: 'Invalid split data.' };
-  }
-  if (!Array.isArray(participants) || participants.length === 0) {
-    return { ok: false, error: 'Select at least one person to split with.' };
-  }
-
-  // Every referenced member (payer + participants) must be an active
-  // member of this group — never trust client-supplied ids without
-  // re-checking against the real membership table.
-  const activeMembers = await db
+async function loadActiveMembers(db: Db, tenantId: string, groupId: string) {
+  return db
     .select({ id: groupMembers.id, kind: groupMembers.kind, userId: groupMembers.userId })
     .from(groupMembers)
     .where(
@@ -98,154 +40,328 @@ export async function createExpenseAction(
         isNull(groupMembers.leftAt),
       ),
     );
-  const activeMemberIds = new Set(activeMembers.map((m) => m.id));
-  if (!activeMemberIds.has(payerMemberId)) return { ok: false, error: 'Choose who paid.' };
-  for (const p of participants) {
-    if (!activeMemberIds.has(p.memberId)) return { ok: false, error: 'Invalid participant.' };
+}
+
+/**
+ * Receipt attach (SPEC.md §8) is optional and best-effort: a storage hiccup
+ * surfaces as a warning appended to the success message rather than failing
+ * the whole expense — the split data the user just entered is the primary
+ * value here, not the attachment. Size is checked *before* the body is read
+ * into memory.
+ */
+async function storeReceipt(
+  expenseId: string,
+  file: FormDataEntryValue | null,
+): Promise<{ key: string | null; warning: string | null }> {
+  if (!(file instanceof File) || file.size === 0) return { key: null, warning: null };
+  if (!file.type.startsWith('image/')) {
+    return { key: null, warning: 'Receipt not attached: only image files are supported.' };
   }
-
-  const order = participants.map((p) => p.memberId);
-  let splits: { memberId: string; shareAmountCents: number; shareUnits: number | null }[];
-
-  if (splitMethod === 'amount') {
-    const sum = participants.reduce((acc, p) => acc + (p.amountCents ?? 0), 0);
-    if (sum !== amountCents) {
-      return {
-        ok: false,
-        error: `Split amounts (${sum / 100}) must add up to the total (${amountCents / 100}).`,
-      };
-    }
-    splits = participants.map((p) => ({
-      memberId: p.memberId,
-      shareAmountCents: p.amountCents ?? 0,
-      shareUnits: null,
-    }));
-  } else {
-    const weights = new Map<string, number>();
-    const shareUnitsByMember = new Map<string, number>();
-    for (const p of participants) {
-      if (splitMethod === 'equal') {
-        weights.set(p.memberId, 1);
-      } else if (splitMethod === 'percentage') {
-        const basisPoints = Math.round((p.weight ?? 0) * 100);
-        weights.set(p.memberId, basisPoints);
-        shareUnitsByMember.set(p.memberId, basisPoints);
-      } else {
-        // 'shares'
-        const shareUnits = Math.round((p.weight ?? 0) * 100);
-        weights.set(p.memberId, p.weight ?? 0);
-        shareUnitsByMember.set(p.memberId, shareUnits);
-      }
-    }
-    const totalWeight = order.reduce((sum, id) => sum + (weights.get(id) ?? 0), 0);
-    if (totalWeight <= 0)
-      return { ok: false, error: 'Split shares must add up to more than zero.' };
-
-    const resolved = distributeByWeights(amountCents, weights, order);
-    splits = order.map((memberId) => ({
-      memberId,
-      shareAmountCents: resolved.get(memberId) ?? 0,
-      shareUnits: shareUnitsByMember.get(memberId) ?? null,
-    }));
+  if (file.size > MAX_RECEIPT_BYTES) {
+    return {
+      key: null,
+      warning: `Receipt not attached: images must be under ${MAX_RECEIPT_BYTES / (1024 * 1024)} MB.`,
+    };
   }
-
-  const expenseId = newId();
-  const timestamp = now();
-
-  // Receipt attach (SPEC.md §8) is optional and best-effort: a storage
-  // hiccup surfaces as a warning appended to the success message rather
-  // than failing the whole expense — the split data the user just entered
-  // is the primary value here, not the attachment.
-  let receiptStorageKey: string | null = null;
-  let receiptWarning: string | null = null;
-  const receiptFile = formData.get('receipt');
-  if (receiptFile instanceof File && receiptFile.size > 0) {
-    if (!receiptFile.type.startsWith('image/')) {
-      receiptWarning = 'Receipt not attached: only image files are supported.';
-    } else {
-      try {
-        const key = `receipts/${expenseId}/${receiptFile.name}`;
-        await sdk.storage.put({
-          key,
-          body: await receiptFile.arrayBuffer(),
-          contentType: receiptFile.type,
-        });
-        receiptStorageKey = key;
-      } catch (err) {
-        receiptWarning = `Receipt not attached: ${err instanceof Error ? err.message : 'upload failed'}.`;
-      }
-    }
+  try {
+    const key = receiptStorageKeyFor(expenseId, file.name);
+    await sdk.storage.put({ key, body: await file.arrayBuffer(), contentType: file.type });
+    return { key, warning: null };
+  } catch (err) {
+    return {
+      key: null,
+      warning: `Receipt not attached: ${err instanceof Error ? err.message : 'upload failed'}.`,
+    };
   }
+}
 
-  await db.insert(expenses).values({
-    id: expenseId,
-    groupId,
-    tenantId,
-    description,
-    amountCents,
-    currency,
-    category,
-    occurredOn,
-    splitMethod,
-    createdByUserId: userId,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    receiptStorageKey,
-  });
+async function deleteReceiptQuietly(key: string | null): Promise<void> {
+  if (!key) return;
+  try {
+    await sdk.storage.delete(key);
+  } catch {
+    // An orphaned object is a storage-quota concern, never a ledger one.
+  }
+}
 
-  await db.insert(expensePayers).values({
-    id: newId(),
-    expenseId,
-    memberId: payerMemberId,
-    amountCents,
-  });
-
-  await db.insert(expenseSplits).values(
-    splits.map((s) => ({
-      id: newId(),
-      expenseId,
-      memberId: s.memberId,
-      shareAmountCents: s.shareAmountCents,
-      shareUnits: s.shareUnits,
-    })),
-  );
-
-  void sdk.activity.log({
-    action: 'expense.added',
-    targetType: 'expense',
-    targetId: expenseId,
-    summary: `Added "${description}" (${currency} ${(amountCents / 100).toFixed(2)})`,
-  });
-
-  // "Expense added by someone else" (SPEC.md §6) — every other active
-  // user-kind member, never guests (no session to notify). Best-effort:
-  // Promise.allSettled so one recipient's failure never affects another's,
-  // or the already-succeeded expense creation.
-  const recipientUserIds = activeMembers
-    .filter((m) => m.kind === 'user' && m.userId && m.userId !== userId)
+/**
+ * "Expense added/edited/deleted by someone else" (SPEC.md §6) — every other
+ * active user-kind member, never guests (no session to notify). Best-effort:
+ * `Promise.allSettled` so one recipient's failure never affects another's,
+ * or the already-committed write.
+ */
+async function notifyOtherMembers(
+  members: { kind: string; userId: string | null }[],
+  actorUserId: string,
+  message: { title: string; body: string; url: string },
+): Promise<void> {
+  const recipients = members
+    .filter((m) => m.kind === 'user' && m.userId && m.userId !== actorUserId)
     .map((m) => m.userId as string);
-  if (recipientUserIds.length > 0) {
-    const requestHeaders = await headers();
-    await Promise.allSettled(
-      recipientUserIds.map((recipientUserId) =>
-        sdk.notifications.send(
-          {
-            recipientUserId,
-            title: 'New expense added',
-            body: `${description} — ${currency} ${(amountCents / 100).toFixed(2)}`,
-            url: `/tally/groups?g=${groupId}`,
-          },
-          requestHeaders,
-        ),
-      ),
-    );
-  }
+  if (recipients.length === 0) return;
+  const requestHeaders = await headers();
+  await Promise.allSettled(
+    recipients.map((recipientUserId) =>
+      sdk.notifications.send({ recipientUserId, ...message }, requestHeaders),
+    ),
+  );
+}
 
-  revalidatePath('/tally/groups');
-  return {
-    ok: true,
-    message: receiptWarning
-      ? `Added "${description}". ${receiptWarning}`
-      : `Added "${description}".`,
-  };
+/**
+ * Adds an expense. Payers (one or more) and the resolved per-member split
+ * are validated by the pure `parseExpenseInput` against the group's *real*
+ * active member set — never trusting client-supplied ids — and every row
+ * lands in one transaction, so a failure part-way can't leave a payer
+ * credited with a total nobody owes.
+ */
+export async function createExpenseAction(
+  _prevState: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    const groupId = String(formData.get('groupId') ?? '');
+    if (!groupId) return { ok: false, error: 'Missing group.' };
+    await requireGroupMember(db, tenantId, userId, groupId);
+    await requireGroupOpen(db, tenantId, groupId);
+
+    const activeMembers = await loadActiveMembers(db, tenantId, groupId);
+    const parsed = parseExpenseInput(
+      readRawInput(formData),
+      new Set(activeMembers.map((m) => m.id)),
+      now(),
+    );
+    if (!parsed.ok) return parsed;
+    const input = parsed.value;
+
+    const expenseId = newId();
+    const timestamp = now();
+    const receipt = await storeReceipt(expenseId, formData.get('receipt'));
+
+    await db.transaction(async (tx) => {
+      await tx.insert(expenses).values({
+        id: expenseId,
+        groupId,
+        tenantId,
+        description: input.description,
+        amountCents: input.amountCents,
+        currency: input.currency,
+        category: input.category,
+        occurredOn: input.occurredOn,
+        notes: input.notes,
+        splitMethod: input.splitMethod,
+        createdByUserId: userId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        receiptStorageKey: receipt.key,
+      });
+      await tx.insert(expensePayers).values(
+        input.payers.map((p) => ({
+          id: newId(),
+          expenseId,
+          memberId: p.memberId,
+          amountCents: p.amountCents,
+        })),
+      );
+      await tx.insert(expenseSplits).values(
+        input.splits.map((s) => ({
+          id: newId(),
+          expenseId,
+          memberId: s.memberId,
+          shareAmountCents: s.shareAmountCents,
+          shareUnits: s.shareUnits,
+        })),
+      );
+    });
+
+    void sdk.activity.log({
+      action: 'expense.added',
+      targetType: 'expense',
+      targetId: expenseId,
+      summary: `Added "${input.description}" (${formatMoney(input.amountCents, input.currency)})`,
+    });
+
+    await notifyOtherMembers(activeMembers, userId, {
+      title: 'New expense added',
+      body: `${input.description} — ${formatMoney(input.amountCents, input.currency)}`,
+      url: `/tally/groups?g=${groupId}`,
+    });
+
+    revalidateTallyViews();
+    return {
+      ok: true,
+      message: receipt.warning
+        ? `Added "${input.description}". ${receipt.warning}`
+        : `Added "${input.description}".`,
+    };
+  });
+}
+
+/**
+ * Edits an expense in place — any active member may edit any expense
+ * (Splitwise's trust model, SPEC.md §6), the audit trail is the activity
+ * log. Payer and split rows are replaced wholesale inside the same
+ * transaction as the expense update. A newly attached receipt replaces
+ * (and removes) the previous object; `removeReceipt=on` drops it.
+ */
+export async function updateExpenseAction(
+  _prevState: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    const groupId = String(formData.get('groupId') ?? '');
+    const expenseId = String(formData.get('expenseId') ?? '');
+    if (!groupId || !expenseId) return { ok: false, error: 'Missing expense.' };
+    await requireGroupMember(db, tenantId, userId, groupId);
+    await requireGroupOpen(db, tenantId, groupId);
+
+    const [existing] = await db
+      .select({ id: expenses.id, receiptStorageKey: expenses.receiptStorageKey })
+      .from(expenses)
+      .where(
+        and(
+          eq(expenses.id, expenseId),
+          eq(expenses.groupId, groupId),
+          eq(expenses.tenantId, tenantId),
+          isNull(expenses.deletedAt),
+        ),
+      );
+    if (!existing) return { ok: false, error: 'This expense no longer exists.' };
+
+    const activeMembers = await loadActiveMembers(db, tenantId, groupId);
+    const parsed = parseExpenseInput(
+      readRawInput(formData),
+      new Set(activeMembers.map((m) => m.id)),
+      now(),
+    );
+    if (!parsed.ok) return parsed;
+    const input = parsed.value;
+
+    let receiptStorageKey = existing.receiptStorageKey;
+    let receiptWarning: string | null = null;
+    const removeReceipt = String(formData.get('removeReceipt') ?? '') === 'on';
+    const uploaded = await storeReceipt(expenseId, formData.get('receipt'));
+    receiptWarning = uploaded.warning;
+    if (uploaded.key) {
+      if (existing.receiptStorageKey && existing.receiptStorageKey !== uploaded.key) {
+        await deleteReceiptQuietly(existing.receiptStorageKey);
+      }
+      receiptStorageKey = uploaded.key;
+    } else if (removeReceipt && existing.receiptStorageKey) {
+      await deleteReceiptQuietly(existing.receiptStorageKey);
+      receiptStorageKey = null;
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(expenses)
+        .set({
+          description: input.description,
+          amountCents: input.amountCents,
+          currency: input.currency,
+          category: input.category,
+          occurredOn: input.occurredOn,
+          notes: input.notes,
+          splitMethod: input.splitMethod,
+          receiptStorageKey,
+          updatedAt: now(),
+        })
+        .where(eq(expenses.id, expenseId));
+      await tx.delete(expensePayers).where(eq(expensePayers.expenseId, expenseId));
+      await tx.delete(expenseSplits).where(eq(expenseSplits.expenseId, expenseId));
+      await tx.insert(expensePayers).values(
+        input.payers.map((p) => ({
+          id: newId(),
+          expenseId,
+          memberId: p.memberId,
+          amountCents: p.amountCents,
+        })),
+      );
+      await tx.insert(expenseSplits).values(
+        input.splits.map((s) => ({
+          id: newId(),
+          expenseId,
+          memberId: s.memberId,
+          shareAmountCents: s.shareAmountCents,
+          shareUnits: s.shareUnits,
+        })),
+      );
+    });
+
+    void sdk.activity.log({
+      action: 'expense.updated',
+      targetType: 'expense',
+      targetId: expenseId,
+      summary: `Edited "${input.description}" (${formatMoney(input.amountCents, input.currency)})`,
+    });
+
+    await notifyOtherMembers(activeMembers, userId, {
+      title: 'Expense updated',
+      body: `${input.description} — ${formatMoney(input.amountCents, input.currency)}`,
+      url: `/tally/groups?g=${groupId}`,
+    });
+
+    revalidateTallyViews();
+    return {
+      ok: true,
+      message: receiptWarning
+        ? `Saved "${input.description}". ${receiptWarning}`
+        : `Saved "${input.description}".`,
+    };
+  });
+}
+
+/** Soft delete (SPEC.md §3) — the row stays for the audit trail and for
+ *  "Delete vs. Close" history checks; balances stop counting it at once. */
+export async function deleteExpenseAction(
+  groupId: string,
+  expenseId: string,
+): Promise<ActionResult> {
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupMember(db, tenantId, userId, groupId);
+    await requireGroupOpen(db, tenantId, groupId);
+
+    const [existing] = await db
+      .select({
+        id: expenses.id,
+        description: expenses.description,
+        amountCents: expenses.amountCents,
+        currency: expenses.currency,
+      })
+      .from(expenses)
+      .where(
+        and(
+          eq(expenses.id, expenseId),
+          eq(expenses.groupId, groupId),
+          eq(expenses.tenantId, tenantId),
+          isNull(expenses.deletedAt),
+        ),
+      );
+    if (!existing) return { ok: true, message: 'Already deleted.' };
+
+    const timestamp = now();
+    await db
+      .update(expenses)
+      .set({ deletedAt: timestamp, updatedAt: timestamp })
+      .where(eq(expenses.id, expenseId));
+
+    void sdk.activity.log({
+      action: 'expense.deleted',
+      targetType: 'expense',
+      targetId: expenseId,
+      summary: `Deleted "${existing.description}" (${formatMoney(existing.amountCents, existing.currency)})`,
+    });
+
+    const activeMembers = await loadActiveMembers(db, tenantId, groupId);
+    await notifyOtherMembers(activeMembers, userId, {
+      title: 'Expense deleted',
+      body: `${existing.description} — ${formatMoney(existing.amountCents, existing.currency)}`,
+      url: `/tally/groups?g=${groupId}`,
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: `Deleted "${existing.description}".` };
+  });
 }

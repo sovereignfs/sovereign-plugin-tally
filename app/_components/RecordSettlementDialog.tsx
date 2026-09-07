@@ -12,7 +12,7 @@ import {
   Textarea,
 } from '@sovereignfs/ui';
 import { recordSettlementAction, type ActionResult } from '../_lib/settlements';
-import { CURRENCY_OPTIONS } from '../_lib/currencies';
+import { CurrencyPicker } from './CurrencyPicker';
 import styles from './DialogForm.module.css';
 
 export interface RecordSettlementMember {
@@ -24,36 +24,41 @@ interface RecordSettlementDialogProps {
   groupId: string;
   defaultCurrency: string;
   members: RecordSettlementMember[];
+  /** The current user's member row — defaults "Paid by" to them. */
+  myMemberId: string | null;
+  disabled?: boolean;
 }
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+function todayLocalIsoDate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /**
- * General-purpose "record a payment" — complements the auto-suggested,
- * one-click `SettleUpButton`s (`app/_lib/balances.ts`'s `simplifyDebts`)
- * rather than replacing them: a suggestion covers the common case (pay
- * off exactly what the algorithm proposes), this covers everything else
- * — a partial payment, a payment between two members the simplification
- * didn't happen to pair up, or backdating a payment that happened earlier
- * (UI-FLOW.md §4, requested directly 2026-08-27). Same Dialog +
- * `useActionState` shape as `ExpenseForm`/`CreateGroupDialog`, submitting
- * to the identical `recordSettlementAction` the suggestion buttons use.
+ * General-purpose "record a payment" — complements the suggested
+ * `SettleUpButton`s rather than replacing them: a suggestion covers the
+ * common case, this covers a partial payment, a payment between two
+ * members no suggestion paired up, or backdating one that happened
+ * earlier (UI-FLOW.md §4).
  */
 export function RecordSettlementDialog({
   groupId,
   defaultCurrency,
   members,
+  myMemberId,
+  disabled,
 }: RecordSettlementDialogProps) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     recordSettlementAction,
     null,
   );
-  const [fromMemberId, setFromMemberId] = useState(members[0]?.memberId ?? '');
-  const [toMemberId, setToMemberId] = useState(members[1]?.memberId ?? members[0]?.memberId ?? '');
+  const defaultFrom = myMemberId ?? members[0]?.memberId ?? '';
+  const defaultTo = members.find((m) => m.memberId !== defaultFrom)?.memberId ?? '';
+  const [fromMemberId, setFromMemberId] = useState(defaultFrom);
+  const [toMemberId, setToMemberId] = useState(defaultTo);
   const [amountCents, setAmountCents] = useState<number | null>(null);
+  const [currency, setCurrency] = useState(defaultCurrency);
 
   useEffect(() => {
     if (state?.ok) {
@@ -62,13 +67,17 @@ export function RecordSettlementDialog({
     }
   }, [state]);
 
+  function memberLabel(m: RecordSettlementMember): string {
+    return m.memberId === myMemberId ? `${m.label} (you)` : m.label;
+  }
+
   return (
     <>
-      <Button type="button" variant="secondary" onClick={() => setOpen(true)}>
+      <Button type="button" variant="secondary" onClick={() => setOpen(true)} disabled={disabled}>
         <Icon name="arrow-left-right" size="sm" aria-hidden />
-        Record settlement
+        Record payment
       </Button>
-      <Dialog open={open} onClose={() => setOpen(false)} size="sm" title="Record settlement">
+      <Dialog open={open} onClose={() => setOpen(false)} size="sm" title="Record a payment">
         <form action={formAction} className={styles.form}>
           <input type="hidden" name="groupId" value={groupId} />
           <input type="hidden" name="amountCents" value={amountCents ?? ''} />
@@ -89,14 +98,18 @@ export function RecordSettlementDialog({
               >
                 {members.map((m) => (
                   <option key={m.memberId} value={m.memberId}>
-                    {m.label}
+                    {memberLabel(m)}
                   </option>
                 ))}
               </Select>
             )}
           </FormField>
 
-          <FormField label="Received by" required>
+          <FormField
+            label="Received by"
+            required
+            hint={fromMemberId === toMemberId ? 'Choose two different people.' : undefined}
+          >
             {(field) => (
               <Select
                 {...field}
@@ -106,7 +119,7 @@ export function RecordSettlementDialog({
               >
                 {members.map((m) => (
                   <option key={m.memberId} value={m.memberId}>
-                    {m.label}
+                    {memberLabel(m)}
                   </option>
                 ))}
               </Select>
@@ -125,14 +138,13 @@ export function RecordSettlementDialog({
           </FormField>
 
           <FormField label="Currency" required>
-            {(field) => (
-              <Select {...field} name="currency" defaultValue={defaultCurrency}>
-                {CURRENCY_OPTIONS.map((option) => (
-                  <option key={option.code} value={option.code}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
+            {() => (
+              <CurrencyPicker
+                name="currency"
+                value={currency}
+                onChange={setCurrency}
+                aria-label="Currency"
+              />
             )}
           </FormField>
 
@@ -143,13 +155,21 @@ export function RecordSettlementDialog({
                 name="settledOn"
                 type="date"
                 required
-                defaultValue={todayIsoDate()}
+                defaultValue={todayLocalIsoDate()}
               />
             )}
           </FormField>
 
           <FormField label="Note" hint="Optional">
-            {(field) => <Textarea {...field} name="note" rows={2} placeholder="Venmo transfer" />}
+            {(field) => (
+              <Textarea
+                {...field}
+                name="note"
+                rows={2}
+                maxLength={500}
+                placeholder="Bank transfer"
+              />
+            )}
           </FormField>
 
           <div className={styles.actions}>
@@ -157,7 +177,7 @@ export function RecordSettlementDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={pending || fromMemberId === toMemberId}>
-              {pending ? 'Recording…' : 'Record settlement'}
+              {pending ? 'Recording…' : 'Record payment'}
             </Button>
           </div>
         </form>

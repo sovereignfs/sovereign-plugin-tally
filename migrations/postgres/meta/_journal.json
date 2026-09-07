@@ -15,6 +15,13 @@
       "when": 1787860977333,
       "tag": "0001_nervous_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788787925271,
+      "tag": "0002_petite_the_initiative",
+      "breakpoints": true
     }
   ]
 }

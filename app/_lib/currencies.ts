@@ -179,3 +179,38 @@ export const CURRENCY_OPTIONS = [
 ] as const;
 
 export const DEFAULT_CURRENCY = 'USD';
+
+/** Currencies most users reach for — surfaced first in every picker so the
+ *  162-entry ISO list doesn't start at "AED". Order is by rough global usage
+ *  in shared-expense apps, not alphabetical. */
+export const COMMON_CURRENCIES = [
+  'USD',
+  'EUR',
+  'GBP',
+  'INR',
+  'AUD',
+  'CAD',
+  'JPY',
+  'CHF',
+  'SGD',
+  'LKR',
+] as const;
+
+const SUPPORTED = new Set<string>(CURRENCY_OPTIONS.map((c) => c.code));
+
+/** True for a code in `CURRENCY_OPTIONS` — the single validation every
+ *  currency-accepting action uses (group create/update, expenses,
+ *  settlements, settings), so no path accepts an arbitrary three-letter
+ *  string another path would reject. */
+export function isSupportedCurrency(code: string): boolean {
+  return SUPPORTED.has(code);
+}
+
+/** `CURRENCY_OPTIONS` reordered with `COMMON_CURRENCIES` first — the order
+ *  every picker renders. `Combobox`'s own search handles the long tail. */
+export const PICKER_CURRENCY_OPTIONS: { code: string; label: string }[] = [
+  ...COMMON_CURRENCIES.map((code) => CURRENCY_OPTIONS.find((c) => c.code === code)).filter(
+    (c): c is (typeof CURRENCY_OPTIONS)[number] => c !== undefined,
+  ),
+  ...CURRENCY_OPTIONS.filter((c) => !(COMMON_CURRENCIES as readonly string[]).includes(c.code)),
+];

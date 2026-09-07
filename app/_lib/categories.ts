@@ -24,4 +24,6 @@ export const CATEGORY_OPTIONS = [
 /** Shared value→label lookup — `groups.ts`/`people.ts`/`inbox.ts` each
  *  build a `GroupActivityItem.categoryLabel` from a stored `category`
  *  value and previously each redefined this map locally. */
-export const CATEGORY_LABEL_BY_VALUE = new Map<string, string>(CATEGORY_OPTIONS.map((c) => [c.value, c.label]));
+export const CATEGORY_LABEL_BY_VALUE = new Map<string, string>(
+  CATEGORY_OPTIONS.map((c) => [c.value, c.label]),
+);

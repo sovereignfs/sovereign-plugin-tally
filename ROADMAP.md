@@ -15,17 +15,17 @@ each depends on the previous unless noted otherwise.
 
 ## MVP
 
-| # | Task | Spec ref | Depends on | Status |
-| - | ---- | -------- | ---------- | ------ |
-| 1 | **Scaffold** — `manifest.json`, `package.json`, `icon.svg`, canonical `sv plugin new` skeleton, manifest hand-aligned to `SPEC.md` §2 (permissions, `group-owner`/`group-member` capabilities+roles, `shellConfig.mobileFooter: false`) | Manifest & permissions | — | ✅ |
-| 2 | **Data model + migrations** — `app/_db/schema.ts` (sqlite-core, source of truth) + `app/_db/schema.postgres.ts` (pg-core mirror, `bigint` timestamps) for `groups`/`group_members`/`expenses`/`expense_payers`/`expense_splits`/`settlements`/`user_settings`; `drizzle-kit generate` for both dialects, `public.` FK-qualifier stripped per `docs/plugin-database.md`. Schema location corrected mid-task (task 6) to `app/_db/`, not the top-level `db/` originally used. | SPEC.md §3 | Task 1 | ✅ |
-| 3 | **Core lib** — `app/_lib/balances.ts` (`netBalanceCents`, cross-group rollup, debt simplification, category/monthly aggregations), `app/_lib/rounding.ts` (deterministic remainder distribution), `app/_lib/ids.ts`. Unit tests (`vitest`) caught a real bug before it shipped: settlement `fromMemberId`/`toMemberId` signs were reversed, which would have made "settling up" widen the gap between two balances instead of closing it. | SPEC.md §4 | Task 2 | ✅ |
-| 4 | **Authorization** — `app/_lib/membership.ts`'s `resolveGroupRole`/`requireGroupMember`/`requireGroupManage`/`hasOtherActiveOwner`/`hasNonZeroBalance`, `app/_lib/group-rules.ts`'s pure `GroupMemberRole`/`canManageGroup`. Corrected against real precedent before building: `sdk.authz`'s resource-grant mechanism is real but unused by any sibling plugin — Docs/Sheets both resolve roles via a direct query against their own membership table instead, so this does too. | SPEC.md §5 | Task 3 | ✅ |
-| 5 | **Layout shell** — `app/(home)/layout.tsx` (`ThreeColumnLayout` + `TallySidebar`: Overview/Groups/People/Inbox nav, Settings pinned bottom), `@detail` parallel route for the 3rd-column detail pane, route skeleton per SPEC.md §9. No sibling plugin uses `ThreeColumnLayout`'s 3-column mode — verified live with placeholder data: select/switch/close all work, list stays visible, zero console errors. | UI-FLOW.md §2 | Task 4 | ✅ |
-| 6 | **Groups: list, create, detail (Balances tab)** — filtered group list, `createGroupAction`, group detail page with real per-member `BalanceChip`s wired to Task 3's lib. Corrected against real precedent: create is a `Dialog` (matching Docs'/Sheets' own create dialogs), not the `/groups/new` route originally sketched. Also found and fixed a real build break: schema must live at `app/_db/schema.ts`, not the top-level `db/schema.ts` `docs/plugin-database.md` itself shows — only `app/` survives the generate step's copy into the runtime. Verified live end-to-end: created a real group, saw it in the list, opened detail, saw the real creator resolved via `sdk.directory` with a "Settled up" `BalanceChip`. | UI-FLOW.md §4 | Task 5 | ✅ |
-| 7 | **Expenses: add** — expense form (`SplitMethodSelector`/`CurrencyInput`/`MemberMultiSelect`), `createExpenseAction`, real split persistence to `expense_payers`/`expense_splits` for all 4 split methods. Single payer per expense for v1 (`expense_payers` supports more; multi-payer input is deferred, tracked not dropped). Found and fixed two real bugs live: a `'use server'` file may only export async functions — `CATEGORY_OPTIONS` (a plain const) silently broke crossing into the Client Component, moved to its own `categories.ts`; and a real settlement-sign bug caught earlier by the unit tests (see task 3). Verified live end-to-end: added a real expense, correct split computed, balance stayed "Settled up" (mathematically correct for a single-member equal split). Edit/delete deferred — not in this task's live-verified scope. | SPEC.md §3/§6 | Task 6 | ✅ |
-| 8 | **Settlements + debt-simplification suggestions** — `recordSettlementAction`, a `SettleUpButton` per simplified-debt suggestion (`app/_lib/balances.ts`'s `simplifyDebts`) in the Balances section — every field (from/to/amount/currency) is already resolved by the algorithm, so it's a single-click confirm, re-validated server-side rather than trusted. **Not live-tested with a real non-zero balance** — that needs a second group member, which needs the member-management UI (`resendGuestInviteAction`/add-member flow), explicitly scoped to Post-MVP item 1, not this task. Confidence instead comes from: `simplifyDebts`/settlement-sign unit tests (task 3, including the bug they caught), a clean typecheck/lint, and live confirmation that the section correctly renders nothing when balances are already zero (the only case reachable with the current single-member test data). | SPEC.md §4/§6 | Task 7 | ✅ |
-| 9 | **Verify** — `pnpm typecheck`/`pnpm test`/`pnpm lint`/`pnpm exec prettier --check`/`pnpm generate` all clean across the whole plugin; live `pnpm dev` walkthrough re-confirmed after task 8's changes: Overview/Groups/People/Inbox/Settings all render, Roomies group + its expense survive a fresh navigation with no console errors (the accumulated `db/schema`/`CATEGORY_OPTIONS` errors seen mid-session were confirmed stale — the browser tool's console buffer persists old messages across navigations; a hard reload plus a stack-trace line-count check confirmed neither actually reproduces anymore). | — | Task 8 | ✅ |
+| #   | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Spec ref               | Depends on | Status |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ---------- | ------ |
+| 1   | **Scaffold** — `manifest.json`, `package.json`, `icon.svg`, canonical `sv plugin new` skeleton, manifest hand-aligned to `SPEC.md` §2 (permissions, `group-owner`/`group-member` capabilities+roles, `shellConfig.mobileFooter: false`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Manifest & permissions | —          | ✅     |
+| 2   | **Data model + migrations** — `app/_db/schema.ts` (sqlite-core, source of truth) + `app/_db/schema.postgres.ts` (pg-core mirror, `bigint` timestamps) for `groups`/`group_members`/`expenses`/`expense_payers`/`expense_splits`/`settlements`/`user_settings`; `drizzle-kit generate` for both dialects, `public.` FK-qualifier stripped per `docs/plugin-database.md`. Schema location corrected mid-task (task 6) to `app/_db/`, not the top-level `db/` originally used.                                                                                                                                                                                                                                                                                                                                                                                                                               | SPEC.md §3             | Task 1     | ✅     |
+| 3   | **Core lib** — `app/_lib/balances.ts` (`netBalanceCents`, cross-group rollup, debt simplification, category/monthly aggregations), `app/_lib/rounding.ts` (deterministic remainder distribution), `app/_lib/ids.ts`. Unit tests (`vitest`) caught a real bug before it shipped: settlement `fromMemberId`/`toMemberId` signs were reversed, which would have made "settling up" widen the gap between two balances instead of closing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | SPEC.md §4             | Task 2     | ✅     |
+| 4   | **Authorization** — `app/_lib/membership.ts`'s `resolveGroupRole`/`requireGroupMember`/`requireGroupManage`/`hasOtherActiveOwner`/`hasNonZeroBalance`, `app/_lib/group-rules.ts`'s pure `GroupMemberRole`/`canManageGroup`. Corrected against real precedent before building: `sdk.authz`'s resource-grant mechanism is real but unused by any sibling plugin — Docs/Sheets both resolve roles via a direct query against their own membership table instead, so this does too.                                                                                                                                                                                                                                                                                                                                                                                                                           | SPEC.md §5             | Task 3     | ✅     |
+| 5   | **Layout shell** — `app/(home)/layout.tsx` (`ThreeColumnLayout` + `TallySidebar`: Overview/Groups/People/Inbox nav, Settings pinned bottom), `@detail` parallel route for the 3rd-column detail pane, route skeleton per SPEC.md §9. No sibling plugin uses `ThreeColumnLayout`'s 3-column mode — verified live with placeholder data: select/switch/close all work, list stays visible, zero console errors.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | UI-FLOW.md §2          | Task 4     | ✅     |
+| 6   | **Groups: list, create, detail (Balances tab)** — filtered group list, `createGroupAction`, group detail page with real per-member `BalanceChip`s wired to Task 3's lib. Corrected against real precedent: create is a `Dialog` (matching Docs'/Sheets' own create dialogs), not the `/groups/new` route originally sketched. Also found and fixed a real build break: schema must live at `app/_db/schema.ts`, not the top-level `db/schema.ts` `docs/plugin-database.md` itself shows — only `app/` survives the generate step's copy into the runtime. Verified live end-to-end: created a real group, saw it in the list, opened detail, saw the real creator resolved via `sdk.directory` with a "Settled up" `BalanceChip`.                                                                                                                                                                         | UI-FLOW.md §4          | Task 5     | ✅     |
+| 7   | **Expenses: add** — expense form (`SplitMethodSelector`/`CurrencyInput`/`MemberMultiSelect`), `createExpenseAction`, real split persistence to `expense_payers`/`expense_splits` for all 4 split methods. Single payer per expense for v1 (`expense_payers` supports more; multi-payer input is deferred, tracked not dropped). Found and fixed two real bugs live: a `'use server'` file may only export async functions — `CATEGORY_OPTIONS` (a plain const) silently broke crossing into the Client Component, moved to its own `categories.ts`; and a real settlement-sign bug caught earlier by the unit tests (see task 3). Verified live end-to-end: added a real expense, correct split computed, balance stayed "Settled up" (mathematically correct for a single-member equal split). Edit/delete deferred — not in this task's live-verified scope.                                            | SPEC.md §3/§6          | Task 6     | ✅     |
+| 8   | **Settlements + debt-simplification suggestions** — `recordSettlementAction`, a `SettleUpButton` per simplified-debt suggestion (`app/_lib/balances.ts`'s `simplifyDebts`) in the Balances section — every field (from/to/amount/currency) is already resolved by the algorithm, so it's a single-click confirm, re-validated server-side rather than trusted. **Not live-tested with a real non-zero balance** — that needs a second group member, which needs the member-management UI (`resendGuestInviteAction`/add-member flow), explicitly scoped to Post-MVP item 1, not this task. Confidence instead comes from: `simplifyDebts`/settlement-sign unit tests (task 3, including the bug they caught), a clean typecheck/lint, and live confirmation that the section correctly renders nothing when balances are already zero (the only case reachable with the current single-member test data). | SPEC.md §4/§6          | Task 7     | ✅     |
+| 9   | **Verify** — `pnpm typecheck`/`pnpm test`/`pnpm lint`/`pnpm exec prettier --check`/`pnpm generate` all clean across the whole plugin; live `pnpm dev` walkthrough re-confirmed after task 8's changes: Overview/Groups/People/Inbox/Settings all render, Roomies group + its expense survive a fresh navigation with no console errors (the accumulated `db/schema`/`CATEGORY_OPTIONS` errors seen mid-session were confirmed stale — the browser tool's console buffer persists old messages across navigations; a hard reload plus a stack-trace line-count check confirmed neither actually reproduces anymore).                                                                                                                                                                                                                                                                                       | —                      | Task 8     | ✅     |
 
 **MVP-minus-chrome: done as of task 9**, with one remaining gap — "add
 members" to a group beyond its creator is still blocked on the
@@ -51,7 +51,7 @@ verification so the settle-up click isn't left applied for the next
 person who runs the seed script.
 
 Post-MVP item 1 (member management) is still the natural next task —
-nothing about a *user's own* ability to add a second person is provable
+nothing about a _user's own_ ability to add a second person is provable
 until it exists, seed data or not.
 
 ## Dev tooling
@@ -133,7 +133,7 @@ phrases the reader as "You"/"you" depending on which side of the payment
 they're on. **Deliberately simplified away from one requested example**:
 "Kasun fully settled up with Thulana" implies detecting when a settlement
 zeroes the pairwise balance between exactly two people — not well-defined
-here (only a *group's* net position per member is unambiguous; pairwise
+here (only a _group's_ net position per member is unambiguous; pairwise
 attribution is `simplifyDebts`'s own allocation choice, not a ledger
 fact, per `resolveCounterparties`'s existing doc comment) — so every
 settlement uses the same "X paid Y {amount}" phrasing regardless.
@@ -163,7 +163,7 @@ Verified live: both seeded groups' full activity feeds read correctly
 end-to-end, including the guest-payer and guest-settlement cases in "Bali
 Trip" ("Jordan Lee paid you EUR 150.00", "Sam Rivera paid EUR 156.80 for
 Dinner at Locavore") and a real `RecordSettlementDialog` submission (paid
-Sam Rivera EUR 25.00, with a note) — confirmed it created a *new* "August
+Sam Rivera EUR 25.00, with a note) — confirmed it created a _new_ "August
 2026" month group above July's, and correctly moved both parties' raw
 ledger balances (not just the simplified suggestion view). Reset the seed
 data afterward (`pnpm seed -- --reset`) so the test payment doesn't linger.
@@ -174,18 +174,18 @@ test` (30 tests) all clean.
 Built out `people/page.tsx` (previously a stub) and a new `@detail/people`
 slot, both requested directly. List page: a headline "You're owed"/"You
 owe" summary (same shape as Overview's, `CurrencyStack` reused), then
-*every* person the user shares a group with — not just non-zero balances
+_every_ person the user shares a group with — not just non-zero balances
 like Overview's capped breakdown — sorted non-zero-balance first (largest
 first), settled people after (alphabetically). Each row deliberately keeps
 name + balance together on the left rather than pushing the balance to a
 trailing right edge the way Groups/Overview rows do — a requested,
 intentional difference for this page. Clicking a person opens the third
-column: a balance summary, then an activity timeline in the *same*
+column: a balance summary, then an activity timeline in the _same_
 month-grouped shape as a group's own Activity feed ("timeline as groups"),
 via the newly-shared `ActivityFeed` component.
 
 **The person timeline is narrower than "everything in every shared
-group"**: only expenses where *both* the user and that person are
+group"**: only expenses where _both_ the user and that person are
 participants (payer or split share) and settlements directly between the
 two. Implemented as a per-expense participant-set check
 (`payersByGroup`/`splitsByGroup` unioned per `expenseId`), not a
@@ -195,7 +195,7 @@ Verified live against a real, deliberately-crafted seed-data edge case:
 the seeded "Bali Trip" group has one expense ("Beach club day pass")
 whose split explicitly excludes Jordan Lee (`scripts/seed.ts`'s own
 comment: "Jordan skipped this one") — confirmed it's the one Bali Trip
-expense *absent* from Jordan's timeline while every other joint
+expense _absent_ from Jordan's timeline while every other joint
 expense (including two paid by third parties, Sam Rivera and Dev Admin,
 correctly labeled as such rather than attributed to Jordan) appears
 correctly. Also verified the multi-group case (Dev Admin, shared across
@@ -205,7 +205,7 @@ carry a `· <group name>` suffix (`ActivityFeed`'s new `showGroupName`
 prop) so it's clear which group each entry happened in.
 
 **Real refactor alongside the feature, not just new code**: this is the
-*third* independent place (`overview.ts`, `groups.ts`'s
+_third_ independent place (`overview.ts`, `groups.ts`'s
 `listGroupsForUser`, now `people.ts`) that needed "fetch every group the
 user belongs to, bucket expenses/payers/splits/settlements/members by
 groupId" — extracted into `app/_lib/group-data.ts`'s `fetchMyGroupsData`,
@@ -272,7 +272,7 @@ storage: (1) `CreateGroupDialog`'s currency field now defaults to the
 user's primary currency instead of a hardcoded `DEFAULT_CURRENCY` —
 deliberately **not** extended to `ExpenseForm`'s own currency default,
 which stays pinned to the group's `defaultCurrency` (a real product call:
-an expense being added *into* a specific group should default to that
+an expense being added _into_ a specific group should default to that
 group's currency, not a personal preference — UI-FLOW.md's "and expense"
 phrasing read as imprecise given Tally has no add-expense flow without a
 group context to begin with). (2) Overview's per-currency rollups
@@ -367,7 +367,7 @@ call as `guest_invite_status: 'sent'` and a thrown error (a real send
 failure or the platform's own per-plugin mailer rate limit) as `'bounced'`
 — the most honest signal actually available through this SDK surface,
 matching SPEC.md §8's own framing of the distinction. Also sends a
-best-effort "added to a group" notification to a newly-added *real* user
+best-effort "added to a group" notification to a newly-added _real_ user
 (`sdk.notifications.send()`, try/catch, mirroring Sheets'
 `notifyMember` exactly) — deliberately scoped to just this one new action's
 own event, not a general Post-MVP item 7 activity/notification retrofit
@@ -404,7 +404,7 @@ attempt, confirmed directly via `lsof`/`ps` after waits up to 30s — a
 session/tooling issue, not a code concern, and not something further
 retries resolved. Per explicit developer decision, shipped without live
 verification. The add-member search picker, the guest-invite email path,
-and the last-owner/non-zero-balance guards' UI wiring (their *logic* is
+and the last-owner/non-zero-balance guards' UI wiring (their _logic_ is
 covered by task 3's existing unit tests via `hasOtherActiveOwner`/
 `hasNonZeroBalance`, but the dialog's own error-surfacing has not been
 click-tested) should get a first real walkthrough before being treated as
@@ -417,7 +417,7 @@ directly. Two new detail-column header CTAs, owner-only, mutually
 exclusive per SPEC.md §7's bright line: a group with any expense or
 settlement history — even soft-deleted, since that's still real history —
 can only ever be **closed** (soft-archived, `archivedAt` set, data stays
-fully intact and visible), never hard-deleted; a group with *zero* history,
+fully intact and visible), never hard-deleted; a group with _zero_ history,
 ever, can only be **deleted** (a true hard delete — nothing exists yet
 another member's math could depend on). `getGroupDetail` (`app/_lib/groups.ts`)
 gained `archivedAt`/`hasHistory` fields to drive this — `hasHistory` reuses
@@ -438,11 +438,11 @@ Balances section, no extra query) so the button renders disabled
 proactively rather than only failing after a click. `deleteGroupAction`
 checks for any `expenses`/`settlements` row (any, including soft-deleted)
 and, only once confirmed zero, cascade-deletes `group_members` rows before
-the `groups` row itself — safe specifically *because* the zero-history
+the `groups` row itself — safe specifically _because_ the zero-history
 precondition rules out any `expense_payers`/`expense_splits` row
 referencing one, unlike `removeMemberAction`'s soft-remove-only approach
 elsewhere in this same file, which exists precisely to avoid that
-orphaning risk when history *does* exist.
+orphaning risk when history _does_ exist.
 
 **Confirm-dialog pattern researched, not invented from scratch**: this
 plugin's first destructive-action confirm, so the codebase was checked for
@@ -453,7 +453,7 @@ found in kanban's `ManageProjectDialog` "Danger zone" (project delete) and
 mirrored identically in Sheets' `WorkbookView` (workbook delete) — reused
 here verbatim rather than inventing a second convention. Deliberately
 **not** copied wholesale, though: kanban's boxed "Danger zone" section
-(label + tinted background) is specific to a settings *dialog's* body;
+(label + tinted background) is specific to a settings _dialog's_ body;
 UI-FLOW.md §4 places Close/Delete as compact peer CTAs directly in the
 detail column's header row alongside "Group settings" and the close link,
 so `GroupLifecycleActions` renders plain buttons there instead, matching
@@ -489,7 +489,7 @@ doesn't treat a child's immediate `EADDRINUSE` exit as a task failure) and
 why setting the env var by hand didn't help either. Worked around (not
 fixed at the `turbo.json` level, which is shared, committed platform
 config out of scope for a plugin-only session) by pointing the browser tool
-directly at the *other* session's already-running dev server
+directly at the _other_ session's already-running dev server
 (`preview_start` with a plain `{url: "http://localhost:5020"}` — no
 `{name}`-based spawn, so autoPort/strict-env never enters the picture) —
 valid since Tally's `.local` plugin source is filesystem-watched and
@@ -504,7 +504,7 @@ disabled with the exact tooltip text on `Bali Trip` (real non-zero
 balances); a fresh zero-history group showed "Delete" instead, and its
 `ConfirmDialog` (destructive, red confirm) deleted it and correctly
 returned to the plain groups list; adding one self-paid expense to a
-second fresh group flipped it to an *enabled* "Close group" (zero net
+second fresh group flipped it to an _enabled_ "Close group" (zero net
 balance), and its own `ConfirmDialog` (non-destructive) closed it,
 replacing the button with the "Closed" `StatusBadge` — group data stayed
 fully visible throughout, matching the confirm copy.
@@ -516,7 +516,7 @@ just-deleted-it case tested first) crashed to Next's generic "Something
 went wrong" error boundary instead of the plain groups list. Root cause:
 `deleteGroupAction` removes `group_members` rows along with `groups`
 (correct — nothing references them once the zero-history precondition
-holds), but `getGroupDetail` calls `requireGroupMember` *before* its own
+holds), but `getGroupDetail` calls `requireGroupMember` _before_ its own
 `if (!group) return null` fallback, and that helper throws
 `GroupAccessError` — not a null return — once no active membership row
 resolves for the id. `@detail/groups/page.tsx` had no try/catch around the
@@ -560,7 +560,7 @@ appears stale.
 **Action → event mapping** (`action` string, dotted verb; `summary` plain
 text; `notify` only where SPEC.md §6's table names one):
 `createGroupAction` → `group.created`; `createExpenseAction` →
-`expense.added` + notify every other active *user*-kind member (never
+`expense.added` + notify every other active _user_-kind member (never
 guests — no session), excluding the actor, via `Promise.allSettled` so one
 recipient's failure can't affect another's or the already-succeeded
 expense; `recordSettlementAction` → `settlement.recorded` + notify the
@@ -592,7 +592,7 @@ paths, specifically:
   USD 15.00" — correctly namespaced by the runtime
   (`${pluginId}:${action}`), sitting directly above a `push.delivery_failed`
   / "push is not configured on this instance" platform log line at the same
-  timestamp, which itself only fires *after* a real notification record is
+  timestamp, which itself only fires _after_ a real notification record is
   created — indirect but real confirmation the send path was reached, not
   short-circuited earlier (e.g. by a permission check). Queried the
   platform's own `notifications` table directly and found exactly one new
@@ -714,7 +714,7 @@ table before and after running the command):
   again" — because this dev instance has real SMTP configured (Mailpit,
   confirmed via `.env`) rather than running unconfigured, and the actual
   send failed for an environment reason (Mailpit most likely not running
-  in this session). Treated as a successful verification of the *failure*
+  in this session). Treated as a successful verification of the _failure_
   path, not a blocker: the action correctly attempted a real send, caught
   the real error, and reported it honestly instead of falsely claiming
   success — proving the integration, even though the success path itself
@@ -753,7 +753,7 @@ reinvented).
   `warnings` entry on the export section surfaces this to the importing
   user whenever the exported data actually includes another member.
 - **Import** creates a brand-new group per exported group (remapped ids via
-  `ctx.remapId`), the importing user as `owner`, and *every* other original
+  `ctx.remapId`), the importing user as `owner`, and _every_ other original
   member — real user or guest alike — recreated as a `guest`
   (`guestOwnerUserId` = importing user, `guestName` = the captured label).
   Deliberate, spec-consistent choice: an import is a personal
@@ -864,7 +864,7 @@ real work was consuming the icons in Tally's own UI, not creating them**:
   same settle action in the same Balances section — icon-ing only one
   would have read as inconsistent, half-finished polish.
 - `send` — added to `InboxActionButton` via a new optional `icon?:
-  IconName` prop, wired only for the Remind action (`icon="send"` at its
+IconName` prop, wired only for the Remind action (`icon="send"` at its
   Inbox call site) — deliberately **not** added to Resend, matching
   UI-FLOW.md §7's literal scope (only Remind gets a named icon).
 
@@ -963,7 +963,7 @@ code path a real drag-and-drop would.
 - Confirmed the rendered "View receipt" link's `href` is a real
   `/api/storage/<token>` signed URL, and `fetch()`-ed it directly:
   `200 OK`, `Content-Type: image/png` (preserved from upload), `Cache-
-  Control: private, no-store` (matching `docs/plugin-development.md`),
+Control: private, no-store` (matching `docs/plugin-development.md`),
   and exactly 70 bytes back — the literal round-tripped image, not just a
   plausible-looking link.
 - Confirmed the same link (a fresh, independently-generated signed URL —
@@ -1009,7 +1009,7 @@ were both already found stale earlier in this plugin's history):
   and an Add-expense action, always visible" — but `MobileHeader`'s real
   API has no slot for extra actions beyond an optional `title`; self-
   rendering it (`shellConfig.mobileHeader: false`) means rebuilding a
-  *working* notification bell and account menu from scratch (confirmed by
+  _working_ notification bell and account menu from scratch (confirmed by
   reading `example-plugins/example-mobile-poc`, the platform's own
   stability-evaluation reference for this exact component pair), a real
   cost for a benefit an in-page alternative gets close enough to. Settings
@@ -1061,7 +1061,7 @@ Live-tested and found genuinely broken: `/tally` rendered the header/footer
 chrome correctly but a completely empty content area. Root-caused by direct
 inspection rather than guessing — a `detail === null` check printed `false`
 even on `/tally`, a route where `@detail/default.tsx` really does
-`return null` server-side. The `detail` *prop value* a client component
+`return null` server-side. The `detail` _prop value_ a client component
 receives is a real Next.js parallel-route/RSC reference, never the literal
 JS `null`, even when what it will eventually render is nothing — `??` only
 treats `null`/`undefined` as absent, so it always picked `detail`, which
@@ -1147,10 +1147,10 @@ specifically so a plugin doesn't hand-roll one. Read it in full before
 deciding: it's a complete interactive notification panel, a materially
 bigger feature than what was asked for here ("the badge tie-in," matching
 UI-FLOW.md's own literal "unread count" framing, not "build an in-app
-bell"). Adopting it is a reasonable *future* task if an in-Tally
+bell"). Adopting it is a reasonable _future_ task if an in-Tally
 notification panel is ever wanted, but out of scope for this one — noted
 here rather than silently building it anyway or silently ignoring that it
-exists. What *was* borrowed from it: the semantic token pattern for an
+exists. What _was_ borrowed from it: the semantic token pattern for an
 unread badge's text color (`--sv-color-text-on-error`, found via its CSS,
 confirmed against `--sv-color-error-text` for the background) rather than
 a hardcoded `white` — `pnpm design:tokens:check` doesn't actually flag
@@ -1174,14 +1174,14 @@ poll loop for one sidebar badge would be disproportionate.
 database**, not just typecheck. The write side (real cross-user
 notifications reaching Tally's own `sdk.notifications.send()` calls) was
 already fully verified in an earlier task (Notifications + activity log
-wiring) — this pass exercised specifically the *read*/badge side, which
+wiring) — this pass exercised specifically the _read_/badge side, which
 hadn't existed until now:
 
 - Confirmed via direct query that real, pre-existing unread Tally
   notifications already sat in the platform's `notifications` table for
   other seeded users (Dev User, Dev Auditor) from earlier sessions'
   live-testing — useful confirmation the write path's data was still
-  there, but not usable for testing *this* user's own badge without
+  there, but not usable for testing _this_ user's own badge without
   switching identity.
 - Inserted two realistic test notification rows for the actual
   logged-in dev session (Dev Owner, confirmed via `/api/auth/get-session`)
@@ -1287,7 +1287,7 @@ owes the current user in Roomies (USD) but is owed by the current user in
 Bali Trip (EUR) — and the dominant-currency pick silently dropped the EUR
 46.67 relationship entirely, showing only "Owes USD 497.38" with no sign
 anything was missing. Sharing multiple groups in different currencies is
-the *normal* case for a cross-group person rollup, not an edge case, so the
+the _normal_ case for a cross-group person rollup, not an edge case, so the
 simplification was wrong to carry over. Fixed by changing
 `OverviewGroupItem`/`OverviewPersonItem` to carry a `balances:
 CurrencyAmount[]` array instead of one currency/amount pair, and rendering
@@ -1307,6 +1307,85 @@ all clean. Not yet tested: the zero-groups empty state and the
 all-settled-up state (no seeded account currently hits either), and no
 mobile-layout pass (Post-MVP item 6 owns that fork for the whole plugin,
 not just this page).
+
+## 2026-09-07 — Review pass: bugs, drift, UX, feature gaps (manifest `0.17.0`)
+
+A full code review of the plugin (bugs, regressions, UI/UX, features) was
+addressed in one pass. Everything below shipped together; verification:
+`pnpm typecheck`, `pnpm test` (64 tests, 4 files), ESLint, Prettier,
+`pnpm design:tokens:check`, and a live `pnpm dev` walkthrough.
+
+**Bugs fixed**
+
+- "Shares" split serialised a default weight of 0 while the stepper showed 1
+  — defaults now agree, and every live total (amount left, % assigned,
+  payer total) is shown in the form before submit.
+- Percentage splits must total exactly 100%; exact amounts and payer
+  amounts must be non-negative integers summing to the total; duplicate
+  participants/payers are rejected. All validation lives in the pure
+  `app/_lib/expense-input.ts` with tests.
+- Closed groups are read-only: every write goes through
+  `requireGroupOpen`; the detail pane disables Add expense / Record
+  payment / Settle up, and an owner can **Reopen**.
+- Per-member balances in the group pane show every currency
+  (`BalanceChipStack`), not an arbitrary first one.
+- Inbox reminder rows are keyed per currency (no duplicate React keys), and
+  Inbox sorts/"2h ago"s by `recordedAt` (`createdAt`), not the user-entered
+  expense date. Entries from a previous year show the year.
+- A stale `?g=`/`?p=` renders a "not found" state with a back link instead
+  of a blank pane (a dead end on mobile).
+- Group settings: demoting or removing yourself closes the dialog and
+  refreshes instead of an unhandled re-fetch rejection; the role select is
+  optimistic; a failed initial load shows an error.
+- Default dates use the browser's local calendar, not UTC.
+- Per-member inputs are labelled with the member's name, not their id.
+- Expense create/update/delete, group create, group delete, and import run
+  in `db.transaction`.
+- Account deletion ends zero-balance memberships and promotes a successor
+  owner where the deleted user was the only one (was: orphaned groups).
+
+Found and fixed during the live walkthrough: the desktop layout kept an
+empty 360px detail column on every route (the `@detail` slot is never a
+literal `null` — `TallyResponsiveShell` now gates it on `?g=`/`?p=` exactly
+as the mobile shell does); a Client Component (`ExpenseDialog`) imported a
+constant from an SDK-touching module, which Turbopack rejects
+(`MAX_RECEIPT_BYTES` moved to the SDK-free `expense-input.ts`); and two
+edge-anchored `Tooltip`s gave the mobile detail pane a horizontal scrollbar
+(anchored inward, and the panes now clip horizontal overflow).
+
+**Drift resolved**
+
+- "Paid by" defaults to the current user (`myMemberId` now on the detail).
+- `expenses.notes`, `groups.description`, start/end dates, and
+  `guestOwnerUserId` ("added by") are now captured and rendered.
+- `aggregateByCategory`/`aggregateByPeriod` drive Overview's "Your spend
+  this month" + "Last six months" and the group pane's analytics
+  (`SpendBars`, token-styled — no chart primitive exists).
+- Receipts export as section `blobs` (when files are included) and are
+  restored on import; the import guard checks every array.
+- One currency validator (`isSupportedCurrency`) for every action.
+- CSS: font weights, radii, border widths, badge sizes on tokens; the one
+  media query lives in `DetailBackLink.module.css`.
+
+**UX / features**
+
+- Persistent **Add expense** (`AddExpenseLauncher`): sidebar header on
+  desktop, page-header icon on mobile; picks a group, then the shared
+  `ExpenseDialog`. Multi-payer expenses. Edit and delete for expenses;
+  delete for settlements (Activity row menu). Settle up asks to confirm.
+- **Leave group** for every member (same guards as removal).
+- **Simplify debts** is now a per-group setting (`groups.simplify_debts`,
+  migration 0002), **off by default** — pairwise balances only ever name
+  people you actually split a bill with; `counterpartiesForGroup` /
+  `suggestedPaymentsForGroup` dispatch on it everywhere.
+- Groups list: Active / Outstanding / You owe / You're owed / Closed filter
+  (`?filter=`), sorted open-first then by latest activity, "Closed" badge.
+  New group opens the group. Settle up sits above the (now capped)
+  Activity feed. Activity rows show "You lent / You borrowed".
+- `formatMoney` uses `Intl.NumberFormat` (thousands separators,
+  zero-decimal currencies). Currency pickers are a searchable `Combobox`
+  with common currencies first. Visiting Inbox marks Tally's notifications
+  read so the badge clears.
 
 ## Explicitly out of scope
 

@@ -1,0 +1,28 @@
+.sidebarButton {
+  width: 100%;
+  justify-content: center;
+}
+
+.groupPicker {
+  margin-bottom: var(--sv-space-4);
+}
+
+.transient {
+  position: fixed;
+  inset: auto var(--sv-space-4) var(--sv-space-4) auto;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-3);
+  padding: var(--sv-space-3) var(--sv-space-4);
+  border: var(--sv-border-width-hairline) solid var(--sv-color-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-color-surface-raised);
+  box-shadow: var(--sv-shadow-popover);
+}
+
+.transientText {
+  margin: 0;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-secondary);
+}

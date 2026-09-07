@@ -5,58 +5,27 @@
   padding: var(--sv-space-6);
   height: 100%;
   overflow-y: auto;
+  /* A tooltip or an unbreakable label anchored near the right edge must
+     never give the pane a horizontal scrollbar (seen on mobile). */
+  overflow-x: hidden;
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sv-space-2);
 }
 
 .title {
   font-size: var(--sv-font-size-lg);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-primary);
   margin: 0;
-}
-
-.closeLink {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sv-space-1);
-  color: var(--sv-color-text-muted);
-}
-
-.closeLink:hover {
-  color: var(--sv-color-text-primary);
-}
-
-/* Desktop: a plain X, trailing after the title (unchanged from before
-   mobile existed). Mobile: a leading chevron-left + label back button —
-   UI-FLOW.md §6's explicit ask, matching MobileStackedDemo's own backLink
-   pattern — reordered ahead of the title via `order` rather than touching
-   the component's JSX structure. Breakpoint matches
-   @sovereignfs/ui's MOBILE_BREAKPOINT_PX. */
-.closeIconMobile,
-.closeLabelMobile {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .closeIconDesktop {
-    display: none;
-  }
-
-  .closeIconMobile,
-  .closeLabelMobile {
-    display: inline;
-  }
-
-  .closeLink {
-    order: -1;
-    font-size: var(--sv-font-size-sm);
-  }
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .section {
@@ -67,7 +36,7 @@
 
 .sectionHeading {
   font-size: var(--sv-font-size-sm);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-muted);
   margin: 0;
   text-transform: uppercase;
@@ -78,6 +47,11 @@
   color: var(--sv-color-text-muted);
   font-size: var(--sv-font-size-sm);
   margin: 0;
+}
+
+.textLink {
+  color: var(--sv-color-accent);
+  font-size: var(--sv-font-size-sm);
 }
 
 .sharedGroups {

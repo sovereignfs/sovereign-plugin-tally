@@ -10,7 +10,7 @@
 
 .monthHeading {
   font-size: var(--sv-font-size-xs);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -34,7 +34,7 @@
 
 .date {
   flex-shrink: 0;
-  width: 3.5rem;
+  width: var(--sv-space-12);
   font-size: var(--sv-font-size-xs);
   color: var(--sv-color-text-muted);
 }
@@ -70,6 +70,19 @@
   color: var(--sv-color-text-primary);
 }
 
+.position {
+  font-size: var(--sv-font-size-xs);
+  color: var(--sv-color-text-muted);
+}
+
+.positionLent {
+  color: var(--sv-color-success-text);
+}
+
+.positionBorrowed {
+  color: var(--sv-color-error-text);
+}
+
 .note {
   font-size: var(--sv-font-size-xs);
   color: var(--sv-color-text-muted);
@@ -79,6 +92,11 @@
 .amount {
   flex-shrink: 0;
   font-size: var(--sv-font-size-sm);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-primary);
+}
+
+.actions {
+  flex-shrink: 0;
+  align-self: center;
 }

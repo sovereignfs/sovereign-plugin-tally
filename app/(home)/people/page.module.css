@@ -47,7 +47,7 @@
 
 .rowActive {
   background: var(--sv-color-surface-sunken);
-  font-weight: 600;
+  box-shadow: inset 0 0 0 var(--sv-border-width-hairline) var(--sv-color-border);
 }
 
 .rowText {

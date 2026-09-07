@@ -1,9 +1,9 @@
 'use client';
 
-import { useActionState } from 'react';
-import { Button, FormField, Select } from '@sovereignfs/ui';
+import { useActionState, useEffect, useState } from 'react';
+import { Button, FormField } from '@sovereignfs/ui';
 import { updateUserSettingsAction, type ActionResult } from '../_lib/settings';
-import { CURRENCY_OPTIONS } from '../_lib/currencies';
+import { CurrencyPicker } from './CurrencyPicker';
 import styles from './DialogForm.module.css';
 
 export function PrimaryCurrencyForm({ primaryCurrency }: { primaryCurrency: string }) {
@@ -11,6 +11,13 @@ export function PrimaryCurrencyForm({ primaryCurrency }: { primaryCurrency: stri
     updateUserSettingsAction,
     null,
   );
+  const [currency, setCurrency] = useState(primaryCurrency);
+
+  // Re-sync with the server-confirmed value after a save (or a refresh), so
+  // the picker never shows a value the database doesn't hold.
+  useEffect(() => {
+    setCurrency(primaryCurrency);
+  }, [primaryCurrency]);
 
   return (
     <form action={formAction} className={styles.form}>
@@ -20,30 +27,22 @@ export function PrimaryCurrencyForm({ primaryCurrency }: { primaryCurrency: stri
         </p>
       )}
       {state?.ok && (
-        <p role="status" aria-live="polite">
+        <p className={styles.feedbackSuccess} role="status" aria-live="polite">
           {state.message}
         </p>
       )}
       <FormField label="Primary currency" required>
-        {(field) => (
-          // `key` forces a remount when the server-confirmed value changes
-          // after a save — otherwise this uncontrolled `<select>` keeps
-          // showing whatever it displayed before submission (its
-          // `defaultValue` only applies on first mount; a prop update
-          // alone doesn't touch its live DOM value). Found live: saved
-          // "EUR" successfully (confirmed in the database) but the
-          // dropdown kept showing "USD" until this fix.
-          <Select {...field} key={primaryCurrency} name="primaryCurrency" defaultValue={primaryCurrency}>
-            {CURRENCY_OPTIONS.map((option) => (
-              <option key={option.code} value={option.code}>
-                {option.label}
-              </option>
-            ))}
-          </Select>
+        {() => (
+          <CurrencyPicker
+            name="primaryCurrency"
+            value={currency}
+            onChange={setCurrency}
+            aria-label="Primary currency"
+          />
         )}
       </FormField>
       <div className={styles.actions}>
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" disabled={pending || currency === primaryCurrency}>
           {pending ? 'Saving…' : 'Save'}
         </Button>
       </div>

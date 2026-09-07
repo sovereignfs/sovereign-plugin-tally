@@ -1,52 +1,73 @@
 'use client';
 
-import { useActionState } from 'react';
-import { Button, Icon } from '@sovereignfs/ui';
-import { recordSettlementAction, type ActionResult } from '../_lib/settlements';
-import styles from './SettleUpButton.module.css';
+import { useState, useTransition } from 'react';
+import { Button, ConfirmDialog, Icon } from '@sovereignfs/ui';
+import { formatMoney } from '../_lib/activity';
+import { recordSettlementAction } from '../_lib/settlements';
 
 interface SettleUpButtonProps {
   groupId: string;
   fromMemberId: string;
+  fromLabel: string;
   toMemberId: string;
+  toLabel: string;
   amountCents: number;
   currency: string;
 }
 
 /**
- * One suggested payment (`app/_lib/balances.ts`'s `simplifyDebts`,
- * UI-FLOW.md §4) as a single-click confirm — every field is already
- * resolved by the simplification algorithm, so there's nothing left to
- * fill in, just a real write to confirm.
+ * One suggested payment (`app/_lib/balances.ts`, UI-FLOW.md §4) as a
+ * confirm-then-record button — every field is already resolved, but a
+ * recorded payment changes balances for two people, so it asks first. A
+ * mistake is still reversible from the Activity feed's Delete.
  */
 export function SettleUpButton({
   groupId,
   fromMemberId,
+  fromLabel,
   toMemberId,
+  toLabel,
   amountCents,
   currency,
 }: SettleUpButtonProps) {
-  const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
-    recordSettlementAction,
-    null,
-  );
+  const [confirming, setConfirming] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleConfirm() {
+    setError(null);
+    startTransition(async () => {
+      const formData = new FormData();
+      formData.set('groupId', groupId);
+      formData.set('fromMemberId', fromMemberId);
+      formData.set('toMemberId', toMemberId);
+      formData.set('amountCents', String(amountCents));
+      formData.set('currency', currency);
+      const result = await recordSettlementAction(null, formData);
+      if (result.ok) setConfirming(false);
+      else setError(result.error);
+    });
+  }
 
   return (
-    <form action={formAction} className={styles.form}>
-      <input type="hidden" name="groupId" value={groupId} />
-      <input type="hidden" name="fromMemberId" value={fromMemberId} />
-      <input type="hidden" name="toMemberId" value={toMemberId} />
-      <input type="hidden" name="amountCents" value={amountCents} />
-      <input type="hidden" name="currency" value={currency} />
-      <Button type="submit" size="sm" variant="secondary" disabled={pending}>
+    <>
+      <Button type="button" size="sm" variant="secondary" onClick={() => setConfirming(true)}>
         <Icon name="arrow-left-right" size="sm" aria-hidden />
-        {pending ? 'Settling…' : 'Settle up'}
+        Settle up
       </Button>
-      {state && !state.ok && (
-        <p className={styles.error} role="alert">
-          {state.error}
-        </p>
-      )}
-    </form>
+      <ConfirmDialog
+        open={confirming}
+        onClose={() => {
+          setConfirming(false);
+          setError(null);
+        }}
+        title="Record this payment?"
+        message={`This records that ${fromLabel} paid ${toLabel} ${formatMoney(amountCents, currency)} outside Tally. It can be deleted from the Activity feed if it was a mistake.`}
+        confirmLabel={pending ? 'Recording…' : 'Record payment'}
+        pending={pending}
+        error={error}
+        onConfirm={handleConfirm}
+      />
+    </>
   );
 }

@@ -5,68 +5,57 @@
   padding: var(--sv-space-6);
   height: 100%;
   overflow-y: auto;
+  /* A tooltip or an unbreakable label anchored near the right edge must
+     never give the pane a horizontal scrollbar (seen on mobile). */
+  overflow-x: hidden;
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sv-space-2);
 }
 
 .title {
   font-size: var(--sv-font-size-lg);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-primary);
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .headerActions {
   display: flex;
   align-items: center;
   gap: var(--sv-space-1);
+  flex-shrink: 0;
 }
 
-.closeLink {
+.about {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   gap: var(--sv-space-1);
+}
+
+.description {
+  margin: 0;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-secondary);
+}
+
+.meta {
+  margin: 0;
+  font-size: var(--sv-font-size-xs);
   color: var(--sv-color-text-muted);
-}
-
-.closeLink:hover {
-  color: var(--sv-color-text-primary);
-}
-
-/* Desktop: a plain X, trailing after the title (unchanged from before
-   mobile existed). Mobile: a leading chevron-left + label back button —
-   UI-FLOW.md §6's explicit ask, matching MobileStackedDemo's own backLink
-   pattern — reordered ahead of the title via `order` rather than touching
-   the component's JSX structure. Breakpoint matches
-   @sovereignfs/ui's MOBILE_BREAKPOINT_PX. */
-.closeIconMobile,
-.closeLabelMobile {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .closeIconDesktop {
-    display: none;
-  }
-
-  .closeIconMobile,
-  .closeLabelMobile {
-    display: inline;
-  }
-
-  .closeLink {
-    order: -1;
-    font-size: var(--sv-font-size-sm);
-  }
 }
 
 .actionsRow {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sv-space-2);
 }
 
@@ -82,18 +71,33 @@
 }
 
 .sectionHeading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-sm);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-muted);
   margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.02em;
 }
 
+.sectionHint {
+  font-weight: var(--sv-font-weight-regular);
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: var(--sv-font-size-xs);
+}
+
 .placeholder {
   color: var(--sv-color-text-muted);
   font-size: var(--sv-font-size-sm);
   margin: 0;
+}
+
+.textLink {
+  color: var(--sv-color-accent);
+  font-size: var(--sv-font-size-sm);
 }
 
 .memberList,
@@ -121,18 +125,27 @@
   gap: var(--sv-space-2);
   font-size: var(--sv-font-size-sm);
   color: var(--sv-color-text-primary);
+  min-width: 0;
 }
 
-.ownerTag {
+.memberTag {
   font-size: var(--sv-font-size-xs);
   color: var(--sv-color-text-muted);
-  border: 1px solid var(--sv-color-border);
+  border: var(--sv-border-width-hairline) solid var(--sv-color-border);
   border-radius: var(--sv-radius-sm);
   padding: 0 var(--sv-space-1);
+  flex-shrink: 0;
 }
 
 .suggestionAmount {
   font-size: var(--sv-font-size-sm);
-  font-weight: 600;
+  font-weight: var(--sv-font-weight-semibold);
   color: var(--sv-color-text-primary);
+}
+
+.footerActions {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: var(--sv-space-2);
+  border-top: var(--sv-border-width-hairline) solid var(--sv-color-border);
 }

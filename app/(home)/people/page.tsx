@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Avatar, EmptyState, PageHeader } from '@sovereignfs/ui';
 import { BalanceChipStack } from '../../_components/BalanceChipStack';
 import { CurrencyStack } from '../../_components/CurrencyStack';
-import { MobileSettingsLink } from '../../_components/MobileSettingsLink';
+import { MobilePageActions } from '../../_components/MobilePageActions';
 import { getPeopleForUser } from '../../_lib/people';
 import styles from './page.module.css';
 
@@ -24,7 +24,7 @@ export default async function PeoplePage({
 
   return (
     <div className={styles.page}>
-      <PageHeader title="People" action={<MobileSettingsLink />} />
+      <PageHeader title="People" action={<MobilePageActions />} />
 
       {!data.hasGroups ? (
         <EmptyState
@@ -61,6 +61,7 @@ export default async function PeoplePage({
                     ]
                       .filter(Boolean)
                       .join(' ')}
+                    aria-current={person.personKey === selectedPersonKey ? 'true' : undefined}
                   >
                     <Avatar name={person.label} size="sm" />
                     <div className={styles.rowText}>

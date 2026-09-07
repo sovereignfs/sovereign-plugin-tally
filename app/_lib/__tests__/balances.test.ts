@@ -3,9 +3,15 @@ import {
   aggregateByCategory,
   aggregateByPeriod,
   computeNetBalances,
+  computePairwiseDebts,
+  counterpartiesForGroup,
   groupBalancesByCurrency,
+  myPositionCents,
+  resolveCounterparties,
+  resolvePairwiseCounterparties,
   rollupByPerson,
   simplifyDebts,
+  suggestedPaymentsForGroup,
 } from '../balances';
 
 describe('computeNetBalances', () => {
@@ -85,7 +91,13 @@ describe('computeNetBalances', () => {
         { expenseId: 'e1', memberId: 'jamie', shareAmountCents: 1000 },
       ],
       settlements: [
-        { fromMemberId: 'jamie', toMemberId: 'alex', amountCents: 1000, currency: 'USD', deletedAt: null },
+        {
+          fromMemberId: 'jamie',
+          toMemberId: 'alex',
+          amountCents: 1000,
+          currency: 'USD',
+          deletedAt: null,
+        },
       ],
     });
     const alex = balances.find((b) => b.memberId === 'alex');
@@ -193,5 +205,149 @@ describe('aggregateByPeriod', () => {
       { periodKey: '2025', currency: 'USD', amountCents: 100 },
       { periodKey: '2026', currency: 'USD', amountCents: 200 },
     ]);
+  });
+});
+
+// A owes B 10 (B paid a 20 dinner split A/B), B owes C 10 (C paid a 20
+// taxi split B/C). Net: A -10, B 0, C +10.
+const CHAIN = {
+  expenses: [
+    { id: 'dinner', currency: 'USD', deletedAt: null },
+    { id: 'taxi', currency: 'USD', deletedAt: null },
+  ],
+  payers: [
+    { expenseId: 'dinner', memberId: 'b', amountCents: 2000 },
+    { expenseId: 'taxi', memberId: 'c', amountCents: 2000 },
+  ],
+  splits: [
+    { expenseId: 'dinner', memberId: 'a', shareAmountCents: 1000 },
+    { expenseId: 'dinner', memberId: 'b', shareAmountCents: 1000 },
+    { expenseId: 'taxi', memberId: 'b', shareAmountCents: 1000 },
+    { expenseId: 'taxi', memberId: 'c', shareAmountCents: 1000 },
+  ],
+  settlements: [],
+};
+
+describe('resolveCounterparties (simplified)', () => {
+  it('routes the chain so A pays C directly — C never transacted with A', () => {
+    const net = computeNetBalances(CHAIN);
+    expect(resolveCounterparties(net, 'a')).toEqual([
+      { memberId: 'c', currency: 'USD', amountCents: 1000 },
+    ]);
+    expect(resolveCounterparties(net, 'b')).toEqual([]);
+  });
+});
+
+describe('computePairwiseDebts', () => {
+  it('keeps the chain as two pairwise debts between people who actually split a bill', () => {
+    const debts = computePairwiseDebts(CHAIN);
+    expect(debts).toContainEqual({
+      fromMemberId: 'a',
+      toMemberId: 'b',
+      currency: 'USD',
+      amountCents: 1000,
+    });
+    expect(debts).toContainEqual({
+      fromMemberId: 'b',
+      toMemberId: 'c',
+      currency: 'USD',
+      amountCents: 1000,
+    });
+    expect(debts).toHaveLength(2);
+  });
+
+  it('nets both directions between a pair and applies settlements', () => {
+    const debts = computePairwiseDebts({
+      expenses: [
+        { id: 'e1', currency: 'USD', deletedAt: null },
+        { id: 'e2', currency: 'USD', deletedAt: null },
+      ],
+      payers: [
+        { expenseId: 'e1', memberId: 'a', amountCents: 3000 },
+        { expenseId: 'e2', memberId: 'b', amountCents: 1000 },
+      ],
+      splits: [
+        { expenseId: 'e1', memberId: 'a', shareAmountCents: 1500 },
+        { expenseId: 'e1', memberId: 'b', shareAmountCents: 1500 },
+        { expenseId: 'e2', memberId: 'a', shareAmountCents: 500 },
+        { expenseId: 'e2', memberId: 'b', shareAmountCents: 500 },
+      ],
+      settlements: [
+        { fromMemberId: 'b', toMemberId: 'a', amountCents: 400, currency: 'USD', deletedAt: null },
+      ],
+    });
+    // b owes a 1500, a owes b 500, b paid a 400 → b owes a 600.
+    expect(debts).toEqual([
+      { fromMemberId: 'b', toMemberId: 'a', currency: 'USD', amountCents: 600 },
+    ]);
+  });
+
+  it('attributes a multi-payer expense proportionally and conserves the net balances', () => {
+    const ledger = {
+      expenses: [{ id: 'e1', currency: 'USD', deletedAt: null }],
+      payers: [
+        { expenseId: 'e1', memberId: 'a', amountCents: 6000 },
+        { expenseId: 'e1', memberId: 'b', amountCents: 3000 },
+      ],
+      splits: [
+        { expenseId: 'e1', memberId: 'a', shareAmountCents: 3000 },
+        { expenseId: 'e1', memberId: 'b', shareAmountCents: 3000 },
+        { expenseId: 'e1', memberId: 'c', shareAmountCents: 3000 },
+      ],
+      settlements: [],
+    };
+    const debts = computePairwiseDebts(ledger);
+    const net = computeNetBalances(ledger);
+    for (const member of ['a', 'b', 'c']) {
+      const owedToMember = debts
+        .filter((d) => d.toMemberId === member)
+        .reduce((s, d) => s + d.amountCents, 0);
+      const owedByMember = debts
+        .filter((d) => d.fromMemberId === member)
+        .reduce((s, d) => s + d.amountCents, 0);
+      expect(owedToMember - owedByMember).toBe(
+        net.find((b) => b.memberId === member)?.amountCents ?? 0,
+      );
+    }
+  });
+
+  it('is empty when everyone is settled', () => {
+    expect(
+      computePairwiseDebts({
+        expenses: [{ id: 'e1', currency: 'USD', deletedAt: null }],
+        payers: [{ expenseId: 'e1', memberId: 'a', amountCents: 1000 }],
+        splits: [{ expenseId: 'e1', memberId: 'a', shareAmountCents: 1000 }],
+        settlements: [],
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('counterpartiesForGroup / suggestedPaymentsForGroup', () => {
+  it('dispatch on the simplifyDebts flag', () => {
+    expect(counterpartiesForGroup({ ...CHAIN, simplifyDebts: false }, 'a')).toEqual([
+      { memberId: 'b', currency: 'USD', amountCents: 1000 },
+    ]);
+    expect(counterpartiesForGroup({ ...CHAIN, simplifyDebts: true }, 'a')).toEqual([
+      { memberId: 'c', currency: 'USD', amountCents: 1000 },
+    ]);
+    expect(suggestedPaymentsForGroup({ ...CHAIN, simplifyDebts: true })).toEqual([
+      { fromMemberId: 'a', toMemberId: 'c', amountCents: 1000, currency: 'USD' },
+    ]);
+    expect(suggestedPaymentsForGroup({ ...CHAIN, simplifyDebts: false })).toHaveLength(2);
+  });
+
+  it('pairwise counterparties use the same sign convention as simplified ones', () => {
+    expect(resolvePairwiseCounterparties(CHAIN, 'c')).toEqual([
+      { memberId: 'b', currency: 'USD', amountCents: -1000 },
+    ]);
+  });
+});
+
+describe('myPositionCents', () => {
+  it('is paid minus share', () => {
+    expect(myPositionCents(5200, 1300)).toBe(3900);
+    expect(myPositionCents(0, 1300)).toBe(-1300);
+    expect(myPositionCents(1300, 1300)).toBe(0);
   });
 });

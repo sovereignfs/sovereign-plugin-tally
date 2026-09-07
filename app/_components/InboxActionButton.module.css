@@ -1,0 +1,10 @@
+.actionWrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+
+.actionError {
+  font-size: var(--sv-font-size-xs);
+  color: var(--sv-color-error-text);
+}

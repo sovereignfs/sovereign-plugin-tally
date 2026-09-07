@@ -1,0 +1,1 @@
+ALTER TABLE "groups" ADD COLUMN "simplify_debts" integer DEFAULT 0 NOT NULL;

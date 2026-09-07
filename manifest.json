@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fs.sovereign.tally",
   "name": "Tally",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "description": "Split shared expenses with a group and track who owes whom.",
   "type": "sovereign",
   "runtime": "native",
@@ -24,7 +24,9 @@
     "mailer:sendExternal"
   ],
   "capabilities": {
-    "group-view": { "description": "View a group's expenses and balances." },
+    "group-view": {
+      "description": "View a group's expenses and balances."
+    },
     "group-add-expense": {
       "description": "Add/edit expenses and record settlements in a group."
     },

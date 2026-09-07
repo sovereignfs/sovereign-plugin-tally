@@ -30,9 +30,17 @@ export function BalanceChipStack({
   const shown = balances.slice(0, STACK_CAP);
   const overflow = balances.length - shown.length;
   return (
-    <span className={[styles.stack, align === 'start' ? styles.alignStart : ''].filter(Boolean).join(' ')}>
+    <span
+      className={[styles.stack, align === 'start' ? styles.alignStart : '']
+        .filter(Boolean)
+        .join(' ')}
+    >
       {shown.map((balance) => (
-        <BalanceChip key={balance.currency} amountCents={balance.amountCents} currency={balance.currency} />
+        <BalanceChip
+          key={balance.currency}
+          amountCents={balance.amountCents}
+          currency={balance.currency}
+        />
       ))}
       {overflow > 0 && (
         <span className={styles.overflow}>

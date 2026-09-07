@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, ConfirmDialog, StatusBadge, Tooltip } from '@sovereignfs/ui';
 import type { ActionResult } from '../_lib/group-settings';
+import styles from './GroupLifecycleActions.module.css';
 
 interface GroupLifecycleActionsProps {
   groupName: string;
@@ -15,22 +16,16 @@ interface GroupLifecycleActionsProps {
    *  "Close group" with an explanatory tooltip while true (UI-FLOW.md §4). */
   hasOutstandingBalance: boolean;
   archiveAction: () => Promise<ActionResult>;
+  reopenAction: () => Promise<ActionResult>;
   deleteAction: () => Promise<ActionResult>;
 }
 
 /**
- * The detail column header's owner-only "Close group"/"Delete" CTA
- * (UI-FLOW.md §4), mutually exclusive per SPEC.md §7: a group with any
- * expense/settlement history — even soft-deleted — can only ever be
- * closed, never hard-deleted; a group with none can only be deleted (there
- * is nothing yet to "close"). Once closed, a status badge replaces the
- * button entirely — there's no "reopen" action to route to.
- *
- * `ConfirmDialog` + `useTransition` mirrors kanban's `ManageProjectDialog`
- * DangerZone, the codebase's one established pattern for a destructive
- * server-action confirm; adapted for a compact header row rather than a
- * boxed "danger zone" section, since UI-FLOW.md places these as peer
- * header CTAs, not a separate settings-screen block.
+ * The detail column header's owner-only lifecycle CTA (UI-FLOW.md §4),
+ * mutually exclusive per SPEC.md §7: a group with any expense/settlement
+ * history can only be closed, never hard-deleted; a group with none can
+ * only be deleted. A closed group shows its badge plus "Reopen" — closing
+ * is reversible, deleting is not.
  */
 export function GroupLifecycleActions({
   groupName,
@@ -38,6 +33,7 @@ export function GroupLifecycleActions({
   hasHistory,
   hasOutstandingBalance,
   archiveAction,
+  reopenAction,
   deleteAction,
 }: GroupLifecycleActionsProps) {
   const router = useRouter();
@@ -45,31 +41,40 @@ export function GroupLifecycleActions({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  if (isArchived) {
-    return <StatusBadge status="unmodified">Closed</StatusBadge>;
-  }
-
   function closeConfirm() {
     setConfirming(null);
     setError(null);
   }
 
-  function handleArchive() {
+  function run(action: () => Promise<ActionResult>, onOk: () => void) {
     setError(null);
     startTransition(async () => {
-      const result = await archiveAction();
-      if (result.ok) setConfirming(null);
+      const result = await action();
+      if (result.ok) onOk();
       else setError(result.error);
     });
   }
 
-  function handleDelete() {
-    setError(null);
-    startTransition(async () => {
-      const result = await deleteAction();
-      if (result.ok) router.replace('/tally/groups');
-      else setError(result.error);
-    });
+  if (isArchived) {
+    return (
+      <span className={styles.closedRow}>
+        <StatusBadge status="unmodified">Closed</StatusBadge>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={pending}
+          onClick={() => run(reopenAction, () => router.refresh())}
+        >
+          {pending ? 'Reopening…' : 'Reopen'}
+        </Button>
+        {error && (
+          <span className={styles.inlineError} role="alert">
+            {error}
+          </span>
+        )}
+      </span>
+    );
   }
 
   if (hasHistory) {
@@ -84,10 +89,16 @@ export function GroupLifecycleActions({
         Close group
       </Button>
     );
+    // `side="left"`: the button sits at the pane's right edge, so a top- or
+    // right-anchored tip would extend past it and give the mobile pane a
+    // horizontal scrollbar.
     return (
       <>
         {hasOutstandingBalance ? (
-          <Tooltip content="This group has an outstanding balance and can't be closed yet.">
+          <Tooltip
+            content="This group has an outstanding balance and can't be closed yet."
+            side="left"
+          >
             <span>{closeButton}</span>
           </Tooltip>
         ) : (
@@ -97,11 +108,11 @@ export function GroupLifecycleActions({
           open={confirming === 'close'}
           onClose={closeConfirm}
           title={`Close "${groupName}"?`}
-          message="This marks the group as closed. Its expenses, settlements, and balances stay intact and visible."
+          message="This marks the group as closed and read-only. Its expenses, settlements, and balances stay intact and visible, and an owner can reopen it at any time."
           confirmLabel={pending ? 'Closing…' : 'Close group'}
           pending={pending}
           error={error}
-          onConfirm={handleArchive}
+          onConfirm={() => run(archiveAction, () => setConfirming(null))}
         />
       </>
     );
@@ -121,7 +132,7 @@ export function GroupLifecycleActions({
         confirmLabel={pending ? 'Deleting…' : 'Delete group'}
         pending={pending}
         error={error}
-        onConfirm={handleDelete}
+        onConfirm={() => run(deleteAction, () => router.replace('/tally/groups'))}
       />
     </>
   );

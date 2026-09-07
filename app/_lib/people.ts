@@ -1,6 +1,7 @@
 import { sdk } from '@sovereignfs/sdk';
 import {
   describeExpenseActivity,
+  describeMyPosition,
   describeSettlementActivity,
   groupActivityByMonth,
   type GroupActivityItem,
@@ -8,8 +9,9 @@ import {
 } from './activity';
 import {
   computeNetBalances,
+  counterpartiesForGroup,
   largestMagnitude,
-  resolveCounterparties,
+  myPositionCents,
   rollupByPerson,
   type CurrencyAmount,
 } from './balances';
@@ -81,12 +83,13 @@ export async function getPeopleForUser(): Promise<PeopleData> {
     const { groupId, myMemberId } = membership;
     const groupMembersList = membersByGroup.get(groupId) ?? [];
 
-    const netBalances = computeNetBalances({
+    const ledger = {
       expenses: expensesByGroup.get(groupId) ?? [],
       payers: payersByGroup.get(groupId) ?? [],
       splits: splitsByGroup.get(groupId) ?? [],
       settlements: settlementsByGroup.get(groupId) ?? [],
-    });
+    };
+    const netBalances = computeNetBalances(ledger);
 
     const myBalances = netBalances.filter((b) => b.memberId === myMemberId && b.amountCents !== 0);
     for (const b of myBalances) {
@@ -96,7 +99,11 @@ export async function getPeopleForUser(): Promise<PeopleData> {
       );
     }
 
-    for (const counterparty of resolveCounterparties(netBalances, myMemberId)) {
+    const counterparties = counterpartiesForGroup(
+      { ...ledger, simplifyDebts: membership.simplifyDebts, netBalances },
+      myMemberId,
+    );
+    for (const counterparty of counterparties) {
       const otherMember = groupMembersList.find((m) => m.id === counterparty.memberId);
       if (!otherMember) continue;
       personRollupInput.push({
@@ -261,13 +268,21 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
     const groupMembersList = membersByGroup.get(groupId) ?? [];
     const labelByMemberId = new Map(groupMembersList.map((m) => [m.id, labelForMember(m)]));
 
-    const netBalances = computeNetBalances({
+    const ledger = {
       expenses: groupExpenses,
       payers: groupPayers,
       splits: groupSplits,
       settlements: groupSettlements,
-    });
-    for (const counterparty of resolveCounterparties(netBalances, myMemberId)) {
+    };
+    const counterparties = counterpartiesForGroup(
+      {
+        ...ledger,
+        simplifyDebts: membership.simplifyDebts,
+        netBalances: computeNetBalances(ledger),
+      },
+      myMemberId,
+    );
+    for (const counterparty of counterparties) {
       if (counterparty.memberId !== targetMemberId) continue;
       balancesByCurrency.set(
         counterparty.currency,
@@ -286,29 +301,53 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
       set.add(s.memberId);
       participantsByExpenseId.set(s.expenseId, set);
     }
-    const payerMemberIdByExpenseId = new Map(groupPayers.map((p) => [p.expenseId, p.memberId]));
+    const payersByExpenseId = new Map<string, { memberId: string; amountCents: number }[]>();
+    for (const p of groupPayers) {
+      const list = payersByExpenseId.get(p.expenseId);
+      if (list) list.push(p);
+      else payersByExpenseId.set(p.expenseId, [p]);
+    }
 
     for (const e of groupExpenses) {
       if (e.deletedAt) continue;
       const participants = participantsByExpenseId.get(e.id);
       if (!participants || !participants.has(myMemberId) || !participants.has(targetMemberId))
         continue;
-      const payerMemberId = payerMemberIdByExpenseId.get(e.id) ?? null;
-      const payerLabel = (payerMemberId && labelByMemberId.get(payerMemberId)) ?? 'Someone';
+      const payers = payersByExpenseId.get(e.id) ?? [];
+      const payerLabels = payers.map((p) =>
+        p.memberId === myMemberId ? 'You' : (labelByMemberId.get(p.memberId) ?? 'Someone'),
+      );
+      const payerLabel =
+        payerLabels.length <= 1
+          ? (payerLabels[0] ?? 'Someone')
+          : payerLabels.length === 2
+            ? `${payerLabels[0]} and ${payerLabels[1]}`
+            : `${payerLabels[0]} and ${payerLabels.length - 1} others`;
+      const myPaid = payers
+        .filter((p) => p.memberId === myMemberId)
+        .reduce((sum, p) => sum + p.amountCents, 0);
+      const mySplit = groupSplits.find((s) => s.expenseId === e.id && s.memberId === myMemberId);
       receiptKeyByExpenseId.set(e.id, e.receiptStorageKey);
       allActivity.push({
         id: e.id,
         type: 'expense',
         occurredOn: e.occurredOn,
+        recordedAt: e.createdAt,
         categoryLabel: (e.category && CATEGORY_LABEL_BY_VALUE.get(e.category)) ?? 'General',
         description: describeExpenseActivity({
           payerLabel,
-          isPayerMe: payerMemberId === myMemberId,
+          isPayerMe: payers.length === 1 && payers[0]?.memberId === myMemberId,
           amountCents: e.amountCents,
           currency: e.currency,
           description: e.description,
         }),
+        myPosition: describeMyPosition({
+          positionCents: myPositionCents(myPaid, mySplit?.shareAmountCents ?? 0),
+          involved: myPaid > 0 || mySplit !== undefined,
+          currency: e.currency,
+        }),
         note: null,
+        notes: e.notes,
         amountCents: e.amountCents,
         currency: e.currency,
         groupName: membership.name,
@@ -325,6 +364,7 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
         id: s.id,
         type: 'settlement',
         occurredOn: s.settledOn,
+        recordedAt: s.createdAt,
         categoryLabel: 'Settlement',
         description: describeSettlementActivity({
           fromLabel: labelByMemberId.get(s.fromMemberId) ?? 'Someone',
@@ -354,7 +394,9 @@ export async function getPersonDetail(personKey: string): Promise<PersonDetail |
     .map(([currency, amountCents]) => ({ currency, amountCents }))
     .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
 
-  const activity = groupActivityByMonth(allActivity.sort((a, b) => b.occurredOn - a.occurredOn));
+  const activity = groupActivityByMonth(
+    allActivity.sort((a, b) => b.occurredOn - a.occurredOn || b.recordedAt - a.recordedAt),
+  );
 
   return {
     personKey,

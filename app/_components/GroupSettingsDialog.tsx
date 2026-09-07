@@ -1,8 +1,10 @@
 'use client';
 
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Button,
+  Checkbox,
   Dialog,
   FormField,
   Input,
@@ -13,8 +15,9 @@ import {
   Tooltip,
 } from '@sovereignfs/ui';
 import type { DirectoryUser } from '@sovereignfs/sdk';
-import { CURRENCY_OPTIONS } from '../_lib/currencies';
+import { toDateInputValue } from '../_lib/activity';
 import type { ActionResult, GroupSettingsView } from '../_lib/group-settings';
+import { CurrencyPicker } from './CurrencyPicker';
 import formStyles from './DialogForm.module.css';
 import styles from './GroupSettingsDialog.module.css';
 
@@ -39,25 +42,16 @@ interface GroupSettingsDialogProps {
   updateRoleAction: (memberId: string, role: string) => Promise<ActionResult>;
 }
 
-function epochToDateInput(value: number | null): string {
-  if (value === null) return '';
-  return new Date(value * 1000).toISOString().slice(0, 10);
-}
-
 /**
  * Owner-only "Group settings" (UI-FLOW.md §8) — a Details form (name/
- * description/currency/dates) plus a Members section (list, add real user
- * via debounced `sdk.directory.searchUsers`, add guest with an optional
- * email invite, resend a bounced invite, change role, remove). Same
- * Dialog + `useActionState` + debounced-search shape as Sheets'
- * `WorkbookShareDialog` — this plugin's own established reference for a
- * member-management dialog (UI-FLOW.md §8's own validated precedent).
+ * description/currency/dates/simplify-debts) plus a Members section (list,
+ * add real user via debounced `sdk.directory.searchUsers`, add guest with
+ * an optional email invite, resend a bounced invite, change role, remove).
  *
- * `refreshNonce` remounts both forms whenever settings are re-fetched after
- * a successful mutation — the same uncontrolled-`defaultValue`-staleness fix
- * `PrimaryCurrencyForm`'s `key={primaryCurrency}` already established
- * elsewhere in this plugin, generalized here since this dialog has several
- * `defaultValue`-driven fields refreshed together, not just one.
+ * Any mutation that ends the current user's own right to manage the group
+ * (demoting or removing themselves) closes the dialog and refreshes the
+ * page instead of re-fetching settings they can no longer read — the
+ * re-fetch would otherwise reject and leave the dialog frozen on stale data.
  */
 export function GroupSettingsDialog({
   open,
@@ -70,11 +64,21 @@ export function GroupSettingsDialog({
   removeMemberAction,
   updateRoleAction,
 }: GroupSettingsDialogProps) {
+  const router = useRouter();
   const [settings, setSettings] = useState<GroupSettingsView | null>(null);
+  /** Whether settings have loaded at least once this open — decides whether
+   *  a failed re-fetch means "lost access" (leave) or "never loaded" (error). */
+  const loadedRef = useRef(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [memberActionError, setMemberActionError] = useState<string | null>(null);
   const [pendingMemberId, setPendingMemberId] = useState<string | null>(null);
+  /** Optimistic role per member while its update is in flight, so the
+   *  controlled `<select>` doesn't snap back to the old value mid-request. */
+  const [optimisticRoles, setOptimisticRoles] = useState<Map<string, string>>(new Map());
 
+  const [currency, setCurrency] = useState('');
+  const [simplify, setSimplify] = useState(false);
   const [addMode, setAddMode] = useState<'user' | 'guest'>('user');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DirectoryUser[]>([]);
@@ -89,16 +93,37 @@ export function GroupSettingsDialog({
     null,
   );
 
-  function refresh() {
-    getSettingsAction().then((data) => {
-      setSettings(data);
-      setRefreshNonce((n) => n + 1);
-    });
-  }
+  const leaveDialog = useCallback(() => {
+    onClose();
+    router.refresh();
+  }, [onClose, router]);
+
+  const refresh = useCallback(() => {
+    getSettingsAction()
+      .then((data) => {
+        if (!data) {
+          leaveDialog();
+          return;
+        }
+        loadedRef.current = true;
+        setSettings(data);
+        setCurrency(data.defaultCurrency);
+        setSimplify(data.simplifyDebts);
+        setOptimisticRoles(new Map());
+        setRefreshNonce((n) => n + 1);
+      })
+      .catch((error: unknown) => {
+        // Lost access mid-session (demoted/removed) — nothing left to manage.
+        if (loadedRef.current) leaveDialog();
+        else setLoadError(error instanceof Error ? error.message : 'Settings could not be loaded.');
+      });
+  }, [getSettingsAction, leaveDialog]);
 
   useEffect(() => {
     if (!open) {
+      loadedRef.current = false;
       setSettings(null);
+      setLoadError(null);
       setMemberActionError(null);
       setAddMode('user');
       setQuery('');
@@ -107,10 +132,7 @@ export function GroupSettingsDialog({
       return;
     }
     refresh();
-    // refreshes on open only — refresh() wraps stable bound actions, keying
-    // on `open` alone (matching WorkbookShareDialog's own precedent) avoids
-    // a fetch loop.
-  }, [open]);
+  }, [open, refresh]);
 
   useEffect(() => {
     if (addState?.ok) {
@@ -119,11 +141,11 @@ export function GroupSettingsDialog({
       setSelectedUser(null);
       refresh();
     }
-  }, [addState]);
+  }, [addState, refresh]);
 
   useEffect(() => {
     if (detailsState?.ok) refresh();
-  }, [detailsState]);
+  }, [detailsState, refresh]);
 
   useEffect(() => {
     if (selectedUser || addMode !== 'user' || query.trim().length < MIN_QUERY_LENGTH) {
@@ -148,36 +170,31 @@ export function GroupSettingsDialog({
 
   const ownerCount = settings?.members.filter((m) => m.role === 'owner').length ?? 0;
 
-  async function handleResend(memberId: string) {
+  async function runMemberAction(
+    memberId: string,
+    action: () => Promise<ActionResult>,
+    endsMyAccess: boolean,
+  ) {
     setMemberActionError(null);
     setPendingMemberId(memberId);
-    const result = await resendInviteAction(memberId);
+    const result = await action();
     setPendingMemberId(null);
-    if (result.ok) refresh();
-    else setMemberActionError(result.error);
-  }
-
-  async function handleRemove(memberId: string) {
-    setMemberActionError(null);
-    setPendingMemberId(memberId);
-    const result = await removeMemberAction(memberId);
-    setPendingMemberId(null);
-    if (result.ok) refresh();
-    else setMemberActionError(result.error);
-  }
-
-  async function handleRoleChange(memberId: string, role: string) {
-    setMemberActionError(null);
-    setPendingMemberId(memberId);
-    const result = await updateRoleAction(memberId, role);
-    setPendingMemberId(null);
-    if (result.ok) refresh();
-    else setMemberActionError(result.error);
+    if (!result.ok) {
+      setOptimisticRoles(new Map());
+      setMemberActionError(result.error);
+      return;
+    }
+    if (endsMyAccess) leaveDialog();
+    else refresh();
   }
 
   return (
     <Dialog open={open} onClose={onClose} size="lg" title="Group settings">
-      {settings === null ? (
+      {loadError ? (
+        <p className={formStyles.feedbackError} role="alert">
+          {loadError}
+        </p>
+      ) : settings === null ? (
         <div className={styles.loading}>
           <Spinner />
         </div>
@@ -192,12 +209,20 @@ export function GroupSettingsDialog({
                 </p>
               )}
               {detailsState?.ok && (
-                <p role="status" aria-live="polite">
+                <p className={formStyles.feedbackSuccess} role="status" aria-live="polite">
                   {detailsState.message}
                 </p>
               )}
               <FormField label="Name" required>
-                {(field) => <Input {...field} name="name" required defaultValue={settings.name} />}
+                {(field) => (
+                  <Input
+                    {...field}
+                    name="name"
+                    required
+                    maxLength={100}
+                    defaultValue={settings.name}
+                  />
+                )}
               </FormField>
               <FormField label="Description" hint="Optional">
                 {(field) => (
@@ -210,14 +235,13 @@ export function GroupSettingsDialog({
                 )}
               </FormField>
               <FormField label="Default currency" required>
-                {(field) => (
-                  <Select {...field} name="defaultCurrency" defaultValue={settings.defaultCurrency}>
-                    {CURRENCY_OPTIONS.map((option) => (
-                      <option key={option.code} value={option.code}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </Select>
+                {() => (
+                  <CurrencyPicker
+                    name="defaultCurrency"
+                    value={currency}
+                    onChange={setCurrency}
+                    aria-label="Default currency"
+                  />
                 )}
               </FormField>
               <div className={styles.dateRow}>
@@ -227,7 +251,7 @@ export function GroupSettingsDialog({
                       {...field}
                       name="startDate"
                       type="date"
-                      defaultValue={epochToDateInput(settings.startDate)}
+                      defaultValue={toDateInputValue(settings.startDate)}
                     />
                   )}
                 </FormField>
@@ -237,11 +261,24 @@ export function GroupSettingsDialog({
                       {...field}
                       name="endDate"
                       type="date"
-                      defaultValue={epochToDateInput(settings.endDate)}
+                      defaultValue={toDateInputValue(settings.endDate)}
                     />
                   )}
                 </FormField>
               </div>
+              <input type="hidden" name="simplifyDebts" value={simplify ? 'on' : ''} />
+              <FormField
+                label="Balances"
+                hint={
+                  simplify
+                    ? 'Suggested payments are reduced to the fewest transfers. Someone may be asked to pay a person they never split a bill with.'
+                    : 'Each person owes exactly what they shared with each other person. More payments, but every one is between people who actually split a bill.'
+                }
+              >
+                {() => (
+                  <Checkbox checked={simplify} onChange={setSimplify} label="Simplify debts" />
+                )}
+              </FormField>
               <div className={formStyles.actions}>
                 <Button type="submit" disabled={detailsPending}>
                   {detailsPending ? 'Saving…' : 'Save details'}
@@ -263,14 +300,19 @@ export function GroupSettingsDialog({
               {settings.members.map((member) => {
                 const isLastOwner = member.role === 'owner' && ownerCount <= 1;
                 const isBusy = pendingMemberId === member.memberId;
+                const shownRole = optimisticRoles.get(member.memberId) ?? member.role;
                 return (
                   <li key={member.memberId} className={styles.member}>
                     <div>
-                      <p className={styles.memberName}>{member.label}</p>
+                      <p className={styles.memberName}>
+                        {member.label}
+                        {member.isMe ? <span className={styles.memberYou}> (you)</span> : null}
+                      </p>
                       {member.email ? <p className={styles.memberEmail}>{member.email}</p> : null}
                       {member.kind === 'guest' ? (
                         <p className={styles.memberMeta}>
                           Guest
+                          {member.managedByLabel ? ` · added by ${member.managedByLabel}` : ''}
                           {member.guestInviteStatus ? ` · Invite ${member.guestInviteStatus}` : ''}
                         </p>
                       ) : null}
@@ -282,7 +324,13 @@ export function GroupSettingsDialog({
                           variant="ghost"
                           size="sm"
                           disabled={isBusy}
-                          onClick={() => handleResend(member.memberId)}
+                          onClick={() =>
+                            runMemberAction(
+                              member.memberId,
+                              () => resendInviteAction(member.memberId),
+                              false,
+                            )
+                          }
                         >
                           Resend
                         </Button>
@@ -291,9 +339,17 @@ export function GroupSettingsDialog({
                       {member.kind === 'user' ? (
                         <Select
                           aria-label={`Role for ${member.label}`}
-                          value={member.role}
+                          value={shownRole}
                           disabled={isBusy || isLastOwner}
-                          onChange={(e) => handleRoleChange(member.memberId, e.currentTarget.value)}
+                          onChange={(e) => {
+                            const role = e.currentTarget.value;
+                            setOptimisticRoles((prev) => new Map(prev).set(member.memberId, role));
+                            void runMemberAction(
+                              member.memberId,
+                              () => updateRoleAction(member.memberId, role),
+                              member.isMe && role === 'member',
+                            );
+                          }}
                         >
                           <option value="owner">Owner</option>
                           <option value="member">Member</option>
@@ -316,9 +372,15 @@ export function GroupSettingsDialog({
                           variant="ghost"
                           size="sm"
                           disabled={isBusy}
-                          onClick={() => handleRemove(member.memberId)}
+                          onClick={() =>
+                            runMemberAction(
+                              member.memberId,
+                              () => removeMemberAction(member.memberId),
+                              member.isMe,
+                            )
+                          }
                         >
-                          Remove
+                          {member.isMe ? 'Leave' : 'Remove'}
                         </Button>
                       )}
                     </div>
@@ -328,109 +390,123 @@ export function GroupSettingsDialog({
             </ul>
 
             <div className={styles.addSection}>
-              <div className={styles.addModeToggle}>
-                <Button
-                  type="button"
-                  variant={addMode === 'user' ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => setAddMode('user')}
-                >
-                  Add existing user
-                </Button>
-                <Button
-                  type="button"
-                  variant={addMode === 'guest' ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => setAddMode('guest')}
-                >
-                  Add guest
-                </Button>
-              </div>
-
-              <form key={refreshNonce} action={addFormAction} className={formStyles.form}>
-                <input type="hidden" name="kind" value={addMode} />
-                {addState && !addState.ok && (
-                  <p className={formStyles.feedbackError} role="status" aria-live="polite">
-                    {addState.error}
-                  </p>
-                )}
-                {addState?.ok && addState.message ? (
-                  <p className={styles.addSuccess} role="status" aria-live="polite">
-                    {addState.message}
-                  </p>
-                ) : null}
-
-                {addMode === 'user' ? (
-                  <>
-                    <input type="hidden" name="userId" value={selectedUser?.id ?? ''} />
-                    <FormField
-                      label="Person"
-                      hint={selectedUser ? undefined : 'Search by name or email'}
+              {settings.archivedAt !== null ? (
+                <p className={styles.memberMeta}>This group is closed. Reopen it to add members.</p>
+              ) : (
+                <>
+                  <div className={styles.addModeToggle}>
+                    <Button
+                      type="button"
+                      variant={addMode === 'user' ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setAddMode('user')}
                     >
-                      {(field) => (
-                        <div className={styles.picker}>
-                          <Input
-                            {...field}
-                            value={selectedUser ? (selectedUser.name ?? selectedUser.email) : query}
-                            onChange={(event) => {
-                              setSelectedUser(null);
-                              setQuery(event.currentTarget.value);
-                            }}
-                            placeholder="Search by name or email"
-                            autoComplete="off"
-                          />
-                          {results.length > 0 && !selectedUser ? (
-                            <ul className={styles.results}>
-                              {results.map((user) => (
-                                <li key={user.id}>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedUser(user);
-                                      setResults([]);
-                                    }}
-                                  >
-                                    {user.name ?? user.email}
-                                    {user.name ? ` (${user.email})` : ''}
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : null}
+                      Add existing user
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={addMode === 'guest' ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setAddMode('guest')}
+                    >
+                      Add guest
+                    </Button>
+                  </div>
+
+                  <form key={refreshNonce} action={addFormAction} className={formStyles.form}>
+                    <input type="hidden" name="kind" value={addMode} />
+                    {addState && !addState.ok && (
+                      <p className={formStyles.feedbackError} role="status" aria-live="polite">
+                        {addState.error}
+                      </p>
+                    )}
+                    {addState?.ok && addState.message ? (
+                      <p className={formStyles.feedbackSuccess} role="status" aria-live="polite">
+                        {addState.message}
+                      </p>
+                    ) : null}
+
+                    {addMode === 'user' ? (
+                      <>
+                        <input type="hidden" name="userId" value={selectedUser?.id ?? ''} />
+                        <FormField
+                          label="Person"
+                          hint={selectedUser ? undefined : 'Search by name or email'}
+                        >
+                          {(field) => (
+                            <div className={styles.picker}>
+                              <Input
+                                {...field}
+                                value={
+                                  selectedUser ? (selectedUser.name ?? selectedUser.email) : query
+                                }
+                                onChange={(event) => {
+                                  setSelectedUser(null);
+                                  setQuery(event.currentTarget.value);
+                                }}
+                                placeholder="Search by name or email"
+                                autoComplete="off"
+                              />
+                              {results.length > 0 && !selectedUser ? (
+                                <ul className={styles.results}>
+                                  {results.map((user) => (
+                                    <li key={user.id}>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedUser(user);
+                                          setResults([]);
+                                        }}
+                                      >
+                                        {user.name ?? user.email}
+                                        {user.name ? ` (${user.email})` : ''}
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                          )}
+                        </FormField>
+                        <div className={formStyles.actions}>
+                          <Button type="submit" disabled={!selectedUser || addPending}>
+                            {addPending ? 'Adding…' : 'Add member'}
+                          </Button>
                         </div>
-                      )}
-                    </FormField>
-                    <div className={formStyles.actions}>
-                      <Button type="submit" disabled={!selectedUser || addPending}>
-                        {addPending ? 'Adding…' : 'Add member'}
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <FormField label="Name" required>
-                      {(field) => (
-                        <Input {...field} name="guestName" required placeholder="Sam Rivera" />
-                      )}
-                    </FormField>
-                    <FormField label="Email" hint="Optional — sends an invite notice">
-                      {(field) => (
-                        <Input
-                          {...field}
-                          name="guestEmail"
-                          type="email"
-                          placeholder="sam@example.com"
-                        />
-                      )}
-                    </FormField>
-                    <div className={formStyles.actions}>
-                      <Button type="submit" disabled={addPending}>
-                        {addPending ? 'Adding…' : 'Add guest'}
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </form>
+                      </>
+                    ) : (
+                      <>
+                        <FormField label="Name" required>
+                          {(field) => (
+                            <Input
+                              {...field}
+                              name="guestName"
+                              required
+                              maxLength={100}
+                              placeholder="Sam Rivera"
+                            />
+                          )}
+                        </FormField>
+                        <FormField label="Email" hint="Optional — sends an invite notice">
+                          {(field) => (
+                            <Input
+                              {...field}
+                              name="guestEmail"
+                              type="email"
+                              placeholder="sam@example.com"
+                            />
+                          )}
+                        </FormField>
+                        <div className={formStyles.actions}>
+                          <Button type="submit" disabled={addPending}>
+                            {addPending ? 'Adding…' : 'Add guest'}
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </form>
+                </>
+              )}
             </div>
           </section>
         </div>

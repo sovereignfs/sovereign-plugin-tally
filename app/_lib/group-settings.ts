@@ -1,20 +1,27 @@
 'use server';
 
 import { headers } from 'next/headers';
-import { revalidatePath } from 'next/cache';
 import { and, eq, isNull } from 'drizzle-orm';
 import { sdk } from '@sovereignfs/sdk';
 import type { DirectoryUser } from '@sovereignfs/sdk';
 import { expenses, groupMembers, groups, settlements } from '../_db/schema';
 import type { ActionResult } from './context';
-import { getContext, now } from './context';
+import { getContext, now, revalidateTallyViews } from './context';
+import { isSupportedCurrency } from './currencies';
+import { parseDateInput } from './expense-input';
 import { isGroupMemberRole } from './group-rules';
 import { newId } from './ids';
-import { hasNonZeroBalance, hasOtherActiveOwner, requireGroupManage } from './membership';
+import {
+  hasNonZeroBalance,
+  hasOtherActiveOwner,
+  requireGroupManage,
+  requireGroupMember,
+  requireGroupOpen,
+  runGuarded,
+} from './membership';
 
 export type { ActionResult };
 
-const CURRENCY_CODE_RE = /^[A-Z]{3}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface GroupSettingsMemberView {
@@ -26,6 +33,12 @@ export interface GroupSettingsMemberView {
   role: 'owner' | 'member';
   /** Only meaningful for guests with an email on file (SPEC.md §3/§8). */
   guestInviteStatus: 'sent' | 'bounced' | null;
+  /** The instance user who added a guest (`guestOwnerUserId`) — "managed
+   *  by" on the guest's row so it's clear who speaks for them. */
+  managedByLabel: string | null;
+  /** Whether this is the current user's own row — the dialog needs to
+   *  know, since demoting/removing yourself ends your right to see it. */
+  isMe: boolean;
 }
 
 export interface GroupSettingsView {
@@ -36,14 +49,16 @@ export interface GroupSettingsView {
   /** Epoch seconds, date-only semantics — null means unset (SPEC.md §3). */
   startDate: number | null;
   endDate: number | null;
+  simplifyDebts: boolean;
+  archivedAt: number | null;
   members: GroupSettingsMemberView[];
 }
 
 /**
  * Full group-settings detail for the owner-only settings dialog (UI-FLOW.md
  * §8) — a separate, richer read than `groups.ts`'s `getGroupDetail`, since
- * the settings screen needs fields (dates, guest email/invite status) that
- * screen has no use for.
+ * the settings screen needs fields (guest email/invite status, who manages
+ * a guest) that screen has no use for.
  */
 export async function getGroupSettings(groupId: string): Promise<GroupSettingsView | null> {
   const { db, userId, tenantId } = await getContext();
@@ -66,10 +81,13 @@ export async function getGroupSettings(groupId: string): Promise<GroupSettingsVi
       ),
     );
 
-  const realUserIds = members
-    .filter((m) => m.kind === 'user' && m.userId)
-    .map((m) => m.userId)
-    .filter((id): id is string => id !== null);
+  const realUserIds = Array.from(
+    new Set(
+      members
+        .flatMap((m) => [m.kind === 'user' ? m.userId : null, m.guestOwnerUserId])
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  );
   const resolvedUsers =
     realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
   const userById = new Map(resolvedUsers.map((u) => [u.id, u]));
@@ -84,8 +102,11 @@ export async function getGroupSettings(groupId: string): Promise<GroupSettingsVi
         email: user?.email ?? null,
         role: m.role === 'owner' ? ('owner' as const) : ('member' as const),
         guestInviteStatus: null,
+        managedByLabel: null,
+        isMe: m.userId === userId,
       };
     }
+    const manager = m.guestOwnerUserId ? userById.get(m.guestOwnerUserId) : undefined;
     return {
       memberId: m.id,
       kind: 'guest' as const,
@@ -96,6 +117,8 @@ export async function getGroupSettings(groupId: string): Promise<GroupSettingsVi
         m.guestInviteStatus === 'sent' || m.guestInviteStatus === 'bounced'
           ? m.guestInviteStatus
           : null,
+      managedByLabel: manager ? (manager.name ?? manager.email) : null,
+      isMe: false,
     };
   });
   // Owner(s) first, then alphabetical — a stable, predictable order for a
@@ -112,64 +135,67 @@ export async function getGroupSettings(groupId: string): Promise<GroupSettingsVi
     defaultCurrency: group.defaultCurrency,
     startDate: group.startDate,
     endDate: group.endDate,
+    simplifyDebts: group.simplifyDebts,
+    archivedAt: group.archivedAt,
     members: memberViews,
   };
 }
 
-function parseOptionalDate(value: string): { ok: true; value: number | null } | { ok: false } {
-  const trimmed = value.trim();
-  if (!trimmed) return { ok: true, value: null };
-  const parsed = Math.floor(new Date(trimmed).getTime() / 1000);
-  if (!Number.isFinite(parsed)) return { ok: false };
-  return { ok: true, value: parsed };
-}
-
-/** Name, description, default currency, start/end dates — one form (SPEC.md §6/§9). */
+/** Name, description, default currency, start/end dates, simplify-debts — one form (SPEC.md §6/§9). */
 export async function updateGroupDetailsAction(
   groupId: string,
   _prevState: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  const name = String(formData.get('name') ?? '').trim();
-  const defaultCurrency = String(formData.get('defaultCurrency') ?? '')
-    .trim()
-    .toUpperCase();
-  const description = String(formData.get('description') ?? '').trim();
-  const startDate = parseOptionalDate(String(formData.get('startDate') ?? ''));
-  const endDate = parseOptionalDate(String(formData.get('endDate') ?? ''));
+    const name = String(formData.get('name') ?? '').trim();
+    const defaultCurrency = String(formData.get('defaultCurrency') ?? '')
+      .trim()
+      .toUpperCase();
+    const description = String(formData.get('description') ?? '').trim();
+    const simplifyDebts = String(formData.get('simplifyDebts') ?? '') === 'on';
+    const startDate = parseDateInput(String(formData.get('startDate') ?? ''), 0);
+    const endDate = parseDateInput(String(formData.get('endDate') ?? ''), 0);
 
-  if (!name) return { ok: false, error: 'Enter a group name.' };
-  if (!CURRENCY_CODE_RE.test(defaultCurrency)) return { ok: false, error: 'Choose a currency.' };
-  if (!startDate.ok) return { ok: false, error: 'Enter a valid start date.' };
-  if (!endDate.ok) return { ok: false, error: 'Enter a valid end date.' };
-  if (startDate.value !== null && endDate.value !== null && endDate.value < startDate.value) {
-    return { ok: false, error: 'End date must be on or after the start date.' };
-  }
+    if (!name) return { ok: false, error: 'Enter a group name.' };
+    if (name.length > 100) return { ok: false, error: 'Keep the group name under 100 characters.' };
+    if (!isSupportedCurrency(defaultCurrency)) return { ok: false, error: 'Choose a currency.' };
+    if (startDate === null) return { ok: false, error: 'Enter a valid start date.' };
+    if (endDate === null) return { ok: false, error: 'Enter a valid end date.' };
+    // `parseDateInput` returns the fallback (0) for a blank field — 0 is
+    // "unset" here, never a real date.
+    const start = startDate === 0 ? null : startDate;
+    const end = endDate === 0 ? null : endDate;
+    if (start !== null && end !== null && end < start) {
+      return { ok: false, error: 'End date must be on or after the start date.' };
+    }
 
-  await db
-    .update(groups)
-    .set({
-      name,
-      description: description || null,
-      defaultCurrency,
-      startDate: startDate.value,
-      endDate: endDate.value,
-      updatedAt: now(),
-    })
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    await db
+      .update(groups)
+      .set({
+        name,
+        description: description || null,
+        defaultCurrency,
+        simplifyDebts,
+        startDate: start,
+        endDate: end,
+        updatedAt: now(),
+      })
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
 
-  void sdk.activity.log({
-    action: 'group.updated',
-    targetType: 'group',
-    targetId: groupId,
-    summary: `Updated group settings for "${name}"`,
+    void sdk.activity.log({
+      action: 'group.updated',
+      targetType: 'group',
+      targetId: groupId,
+      summary: `Updated group settings for "${name}"`,
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Group settings saved.' };
   });
-
-  revalidatePath('/tally/groups');
-  return { ok: true, message: 'Group settings saved.' };
 }
 
 /** Directory typeahead for the settings dialog's "add member" picker. */
@@ -233,123 +259,135 @@ export async function addMemberAction(
   _prevState: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
+    await requireGroupOpen(db, tenantId, groupId);
 
-  const [group] = await db
-    .select({ name: groups.name })
-    .from(groups)
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
-  if (!group) return { ok: false, error: 'Group not found.' };
+    const [group] = await db
+      .select({ name: groups.name })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    if (!group) return { ok: false, error: 'Group not found.' };
 
-  const kind = String(formData.get('kind') ?? '').trim();
+    const kind = String(formData.get('kind') ?? '').trim();
 
-  if (kind === 'user') {
-    const memberUserId = String(formData.get('userId') ?? '').trim();
-    if (!memberUserId) return { ok: false, error: 'Choose a person to add.' };
+    if (kind === 'user') {
+      const memberUserId = String(formData.get('userId') ?? '').trim();
+      if (!memberUserId) return { ok: false, error: 'Choose a person to add.' };
 
-    const [resolvedUser] = await sdk.directory.resolveUsers({ ids: [memberUserId] });
-    if (!resolvedUser) return { ok: false, error: 'That user could not be found.' };
+      const [resolvedUser] = await sdk.directory.resolveUsers({ ids: [memberUserId] });
+      if (!resolvedUser) return { ok: false, error: 'That user could not be found.' };
 
-    const existing = await db
-      .select({ id: groupMembers.id })
-      .from(groupMembers)
-      .where(
-        and(
-          eq(groupMembers.groupId, groupId),
-          eq(groupMembers.tenantId, tenantId),
-          eq(groupMembers.userId, memberUserId),
-          eq(groupMembers.kind, 'user'),
-          isNull(groupMembers.leftAt),
-        ),
-      );
-    if (existing.length > 0) return { ok: false, error: 'Already a member of this group.' };
+      const existing = await db
+        .select({ id: groupMembers.id })
+        .from(groupMembers)
+        .where(
+          and(
+            eq(groupMembers.groupId, groupId),
+            eq(groupMembers.tenantId, tenantId),
+            eq(groupMembers.userId, memberUserId),
+            eq(groupMembers.kind, 'user'),
+            isNull(groupMembers.leftAt),
+          ),
+        );
+      if (existing.length > 0) return { ok: false, error: 'Already a member of this group.' };
 
-    await db.insert(groupMembers).values({
-      id: newId(),
-      groupId,
-      tenantId,
-      kind: 'user',
-      userId: memberUserId,
-      role: 'member',
-      joinedAt: now(),
-    });
-
-    void sdk.activity.log({
-      action: 'group.member_added',
-      targetType: 'group',
-      targetId: groupId,
-      subjectUserId: memberUserId,
-      summary: `Added ${resolvedUser.name ?? resolvedUser.email} to "${group.name}"`,
-    });
-
-    // Added-to-a-group notice (SPEC.md §6's event table) — best-effort, a
-    // failure here must never undo an add that already succeeded.
-    try {
-      await sdk.notifications.send(
-        {
-          recipientUserId: memberUserId,
-          title: 'Added to a Tally group',
-          body: `You were added to "${group.name}".`,
-          url: `/tally/groups?g=${groupId}`,
-        },
-        await headers(),
-      );
-    } catch {
-      // See comment above.
-    }
-
-    revalidatePath('/tally/groups');
-    return { ok: true, message: `Added ${resolvedUser.name ?? resolvedUser.email}.` };
-  }
-
-  if (kind === 'guest') {
-    const guestName = String(formData.get('guestName') ?? '').trim();
-    const guestEmail = String(formData.get('guestEmail') ?? '').trim();
-    if (!guestName) return { ok: false, error: 'Enter a name for the guest.' };
-    if (guestEmail && !EMAIL_RE.test(guestEmail)) {
-      return { ok: false, error: 'Enter a valid email address, or leave it blank.' };
-    }
-
-    let guestInviteStatus: 'sent' | 'bounced' | null = null;
-    if (guestEmail) {
-      const [inviter] = await sdk.directory.resolveUsers({ ids: [userId] });
-      guestInviteStatus = await sendGuestInviteEmail({
-        guestEmail,
-        guestName,
-        groupName: group.name,
-        inviterLabel: inviter?.name ?? inviter?.email ?? 'A group member',
+      await db.insert(groupMembers).values({
+        id: newId(),
+        groupId,
+        tenantId,
+        kind: 'user',
+        userId: memberUserId,
+        role: 'member',
+        joinedAt: now(),
       });
+
+      void sdk.activity.log({
+        action: 'group.member_added',
+        targetType: 'group',
+        targetId: groupId,
+        subjectUserId: memberUserId,
+        summary: `Added ${resolvedUser.name ?? resolvedUser.email} to "${group.name}"`,
+      });
+
+      // Added-to-a-group notice (SPEC.md §6's event table) — best-effort, a
+      // failure here must never undo an add that already succeeded.
+      try {
+        await sdk.notifications.send(
+          {
+            recipientUserId: memberUserId,
+            title: 'Added to a Tally group',
+            body: `You were added to "${group.name}". You can leave from the group's page if this was a mistake.`,
+            url: `/tally/groups?g=${groupId}`,
+          },
+          await headers(),
+        );
+      } catch {
+        // See comment above.
+      }
+
+      revalidateTallyViews();
+      return { ok: true, message: `Added ${resolvedUser.name ?? resolvedUser.email}.` };
     }
 
-    await db.insert(groupMembers).values({
-      id: newId(),
-      groupId,
-      tenantId,
-      kind: 'guest',
-      guestName,
-      guestEmail: guestEmail || null,
-      guestInviteStatus,
-      guestOwnerUserId: userId,
-      role: 'member',
-      joinedAt: now(),
-    });
+    if (kind === 'guest') {
+      const guestName = String(formData.get('guestName') ?? '').trim();
+      const guestEmail = String(formData.get('guestEmail') ?? '').trim();
+      if (!guestName) return { ok: false, error: 'Enter a name for the guest.' };
+      if (guestName.length > 100)
+        return { ok: false, error: 'Keep the name under 100 characters.' };
+      if (guestEmail && !EMAIL_RE.test(guestEmail)) {
+        return { ok: false, error: 'Enter a valid email address, or leave it blank.' };
+      }
 
-    void sdk.activity.log({
-      action: 'group.member_added',
-      targetType: 'group',
-      targetId: groupId,
-      summary: `Added guest ${guestName} to "${group.name}"`,
-    });
+      // Insert first, then notify — an email about a membership that never
+      // got written would be worse than a member whose notice failed.
+      const memberId = newId();
+      await db.insert(groupMembers).values({
+        id: memberId,
+        groupId,
+        tenantId,
+        kind: 'guest',
+        guestName,
+        guestEmail: guestEmail || null,
+        guestInviteStatus: null,
+        guestOwnerUserId: userId,
+        role: 'member',
+        joinedAt: now(),
+      });
 
-    revalidatePath('/tally/groups');
-    if (!guestEmail) return { ok: true, message: `Added ${guestName}.` };
-    return guestInviteStatus === 'sent'
-      ? { ok: true, message: `Added ${guestName} and sent an invite email.` }
-      : { ok: true, message: `Added ${guestName}, but the invite email failed to send.` };
-  }
+      let guestInviteStatus: 'sent' | 'bounced' | null = null;
+      if (guestEmail) {
+        const [inviter] = await sdk.directory.resolveUsers({ ids: [userId] });
+        guestInviteStatus = await sendGuestInviteEmail({
+          guestEmail,
+          guestName,
+          groupName: group.name,
+          inviterLabel: inviter?.name ?? inviter?.email ?? 'A group member',
+        });
+        await db
+          .update(groupMembers)
+          .set({ guestInviteStatus })
+          .where(eq(groupMembers.id, memberId));
+      }
 
-  return { ok: false, error: 'Invalid member type.' };
+      void sdk.activity.log({
+        action: 'group.member_added',
+        targetType: 'group',
+        targetId: groupId,
+        summary: `Added guest ${guestName} to "${group.name}"`,
+      });
+
+      revalidateTallyViews();
+      if (!guestEmail) return { ok: true, message: `Added ${guestName}.` };
+      return guestInviteStatus === 'sent'
+        ? { ok: true, message: `Added ${guestName} and sent an invite email.` }
+        : { ok: true, message: `Added ${guestName}, but the invite email failed to send.` };
+    }
+
+    return { ok: false, error: 'Invalid member type.' };
+  });
 }
 
 /** Re-sends the invite email for a `guest_invite_status` that never delivered (SPEC.md §6). */
@@ -357,99 +395,152 @@ export async function resendGuestInviteAction(
   groupId: string,
   memberId: string,
 ): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  const [group] = await db
-    .select({ name: groups.name })
-    .from(groups)
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
-  if (!group) return { ok: false, error: 'Group not found.' };
+    const [group] = await db
+      .select({ name: groups.name })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    if (!group) return { ok: false, error: 'Group not found.' };
 
-  const [member] = await db
-    .select()
-    .from(groupMembers)
-    .where(
-      and(
-        eq(groupMembers.id, memberId),
-        eq(groupMembers.groupId, groupId),
-        eq(groupMembers.tenantId, tenantId),
-        eq(groupMembers.kind, 'guest'),
-        isNull(groupMembers.leftAt),
-      ),
-    );
-  if (!member || !member.guestEmail)
-    return { ok: false, error: 'This guest has no invite email to resend.' };
+    const [member] = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.id, memberId),
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.tenantId, tenantId),
+          eq(groupMembers.kind, 'guest'),
+          isNull(groupMembers.leftAt),
+        ),
+      );
+    if (!member || !member.guestEmail)
+      return { ok: false, error: 'This guest has no invite email to resend.' };
 
-  const [inviter] = await sdk.directory.resolveUsers({ ids: [userId] });
-  const status = await sendGuestInviteEmail({
-    guestEmail: member.guestEmail,
-    guestName: member.guestName ?? 'Guest',
-    groupName: group.name,
-    inviterLabel: inviter?.name ?? inviter?.email ?? 'A group member',
+    const [inviter] = await sdk.directory.resolveUsers({ ids: [userId] });
+    const status = await sendGuestInviteEmail({
+      guestEmail: member.guestEmail,
+      guestName: member.guestName ?? 'Guest',
+      groupName: group.name,
+      inviterLabel: inviter?.name ?? inviter?.email ?? 'A group member',
+    });
+
+    await db
+      .update(groupMembers)
+      .set({ guestInviteStatus: status })
+      .where(eq(groupMembers.id, memberId));
+
+    void sdk.activity.log({
+      action: 'group.guest_invite_resent',
+      targetType: 'group',
+      targetId: groupId,
+      summary: `Resent the invite email for guest ${member.guestName ?? 'Guest'}`,
+    });
+
+    revalidateTallyViews();
+    return status === 'sent'
+      ? { ok: true, message: 'Invite email resent.' }
+      : { ok: false, error: 'The invite email failed to send again.' };
   });
-
-  await db
-    .update(groupMembers)
-    .set({ guestInviteStatus: status })
-    .where(eq(groupMembers.id, memberId));
-
-  void sdk.activity.log({
-    action: 'group.guest_invite_resent',
-    targetType: 'group',
-    targetId: groupId,
-    summary: `Resent the invite email for guest ${member.guestName ?? 'Guest'}`,
-  });
-
-  revalidatePath('/tally/groups');
-  return status === 'sent'
-    ? { ok: true, message: 'Invite email resent.' }
-    : { ok: false, error: 'The invite email failed to send again.' };
 }
 
 /** Last-owner + non-zero-balance guards (SPEC.md §5/§6). */
 export async function removeMemberAction(groupId: string, memberId: string): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  const [member] = await db
-    .select()
-    .from(groupMembers)
-    .where(
-      and(
-        eq(groupMembers.id, memberId),
-        eq(groupMembers.groupId, groupId),
-        eq(groupMembers.tenantId, tenantId),
-        isNull(groupMembers.leftAt),
-      ),
-    );
-  // Already gone — idempotent, matches Sheets' removeWorkbookMember precedent.
-  if (!member) return { ok: true };
+    const [member] = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.id, memberId),
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.tenantId, tenantId),
+          isNull(groupMembers.leftAt),
+        ),
+      );
+    // Already gone — idempotent, matches Sheets' removeWorkbookMember precedent.
+    if (!member) return { ok: true };
 
-  if (member.role === 'owner') {
-    const otherOwnerExists = await hasOtherActiveOwner(db, tenantId, groupId, memberId);
-    if (!otherOwnerExists) return { ok: false, error: 'The last owner cannot be removed.' };
-  }
+    if (member.role === 'owner') {
+      const otherOwnerExists = await hasOtherActiveOwner(db, tenantId, groupId, memberId);
+      if (!otherOwnerExists) return { ok: false, error: 'The last owner cannot be removed.' };
+    }
 
-  if (await hasNonZeroBalance(db, groupId, memberId)) {
-    return {
-      ok: false,
-      error: 'This member has an outstanding balance and cannot be removed yet.',
-    };
-  }
+    if (await hasNonZeroBalance(db, groupId, memberId)) {
+      return {
+        ok: false,
+        error: 'This member has an outstanding balance and cannot be removed yet.',
+      };
+    }
 
-  await db.update(groupMembers).set({ leftAt: now() }).where(eq(groupMembers.id, memberId));
+    await db.update(groupMembers).set({ leftAt: now() }).where(eq(groupMembers.id, memberId));
 
-  void sdk.activity.log({
-    action: 'group.member_removed',
-    targetType: 'group',
-    targetId: groupId,
-    subjectUserId: member.kind === 'user' ? (member.userId ?? undefined) : undefined,
-    summary: `Removed a ${member.kind === 'guest' ? 'guest' : 'member'} from the group`,
+    void sdk.activity.log({
+      action: 'group.member_removed',
+      targetType: 'group',
+      targetId: groupId,
+      subjectUserId: member.kind === 'user' ? (member.userId ?? undefined) : undefined,
+      summary: `Removed a ${member.kind === 'guest' ? 'guest' : 'member'} from the group`,
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Member removed.' };
   });
+}
 
-  revalidatePath('/tally/groups');
-  return { ok: true, message: 'Member removed.' };
+/**
+ * Leaves a group — the member-side counterpart of `removeMemberAction`,
+ * with the same guards (SPEC.md §5: no leaving with a balance, no leaving
+ * as the last owner). Anyone can be added to a group without consent, so
+ * anyone must be able to leave one.
+ */
+export async function leaveGroupAction(groupId: string): Promise<ActionResult> {
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupMember(db, tenantId, userId, groupId);
+
+    const [member] = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.tenantId, tenantId),
+          eq(groupMembers.userId, userId),
+          eq(groupMembers.kind, 'user'),
+          isNull(groupMembers.leftAt),
+        ),
+      );
+    if (!member) return { ok: true };
+
+    if (member.role === 'owner') {
+      const otherOwnerExists = await hasOtherActiveOwner(db, tenantId, groupId, member.id);
+      if (!otherOwnerExists) {
+        return { ok: false, error: 'Make someone else an owner before leaving.' };
+      }
+    }
+    if (await hasNonZeroBalance(db, groupId, member.id)) {
+      return { ok: false, error: 'Settle up your balance before leaving this group.' };
+    }
+
+    await db.update(groupMembers).set({ leftAt: now() }).where(eq(groupMembers.id, member.id));
+
+    void sdk.activity.log({
+      action: 'group.member_left',
+      targetType: 'group',
+      targetId: groupId,
+      summary: 'Left the group',
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'You left the group.' };
+  });
 }
 
 /** Last-owner check (SPEC.md §5/§6). */
@@ -458,94 +549,130 @@ export async function updateMemberRoleAction(
   memberId: string,
   role: string,
 ): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  if (!isGroupMemberRole(role)) return { ok: false, error: 'Invalid role.' };
+    if (!isGroupMemberRole(role)) return { ok: false, error: 'Invalid role.' };
 
-  const [member] = await db
-    .select()
-    .from(groupMembers)
-    .where(
-      and(
-        eq(groupMembers.id, memberId),
-        eq(groupMembers.groupId, groupId),
-        eq(groupMembers.tenantId, tenantId),
-        isNull(groupMembers.leftAt),
-      ),
-    );
-  if (!member) return { ok: false, error: 'Member not found.' };
-  if (member.kind !== 'user') return { ok: false, error: "A guest's role can't be changed." };
-  if (member.role === role) return { ok: true };
+    const [member] = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.id, memberId),
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.tenantId, tenantId),
+          isNull(groupMembers.leftAt),
+        ),
+      );
+    if (!member) return { ok: false, error: 'Member not found.' };
+    if (member.kind !== 'user') return { ok: false, error: "A guest's role can't be changed." };
+    if (member.role === role) return { ok: true };
 
-  if (member.role === 'owner' && role === 'member') {
-    const otherOwnerExists = await hasOtherActiveOwner(db, tenantId, groupId, memberId);
-    if (!otherOwnerExists) return { ok: false, error: 'The last owner cannot be demoted.' };
-  }
+    if (member.role === 'owner' && role === 'member') {
+      const otherOwnerExists = await hasOtherActiveOwner(db, tenantId, groupId, memberId);
+      if (!otherOwnerExists) return { ok: false, error: 'The last owner cannot be demoted.' };
+    }
 
-  await db.update(groupMembers).set({ role }).where(eq(groupMembers.id, memberId));
+    await db.update(groupMembers).set({ role }).where(eq(groupMembers.id, memberId));
 
-  void sdk.activity.log({
-    action: 'group.member_role_updated',
-    targetType: 'group',
-    targetId: groupId,
-    subjectUserId: member.userId ?? undefined,
-    summary: `Changed a member's role to ${role}`,
+    void sdk.activity.log({
+      action: 'group.member_role_updated',
+      targetType: 'group',
+      targetId: groupId,
+      subjectUserId: member.userId ?? undefined,
+      summary: `Changed a member's role to ${role}`,
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Role updated.' };
   });
-
-  revalidatePath('/tally/groups');
-  return { ok: true, message: 'Role updated.' };
 }
 
 /**
  * "Close group" — the only path once a group has any expense/settlement
  * history, blocked while any active member has a non-zero balance (SPEC.md
- * §7). Soft: sets `archivedAt`, never deletes anything.
+ * §7). Soft: sets `archivedAt`, never deletes anything. A closed group is
+ * read-only (`requireGroupOpen`) until `reopenGroupAction`.
  */
 export async function archiveGroupAction(groupId: string): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  const [group] = await db
-    .select({ archivedAt: groups.archivedAt })
-    .from(groups)
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
-  if (!group) return { ok: false, error: 'Group not found.' };
-  if (group.archivedAt) return { ok: true, message: 'Group already closed.' };
+    const [group] = await db
+      .select({ archivedAt: groups.archivedAt })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    if (!group) return { ok: false, error: 'Group not found.' };
+    if (group.archivedAt) return { ok: true, message: 'Group already closed.' };
 
-  const activeMembers = await db
-    .select({ id: groupMembers.id })
-    .from(groupMembers)
-    .where(
-      and(
-        eq(groupMembers.groupId, groupId),
-        eq(groupMembers.tenantId, tenantId),
-        isNull(groupMembers.leftAt),
-      ),
-    );
-  for (const member of activeMembers) {
-    if (await hasNonZeroBalance(db, groupId, member.id)) {
-      return {
-        ok: false,
-        error: 'This group has an outstanding balance and cannot be closed yet.',
-      };
+    const activeMembers = await db
+      .select({ id: groupMembers.id })
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.tenantId, tenantId),
+          isNull(groupMembers.leftAt),
+        ),
+      );
+    for (const member of activeMembers) {
+      if (await hasNonZeroBalance(db, groupId, member.id)) {
+        return {
+          ok: false,
+          error: 'This group has an outstanding balance and cannot be closed yet.',
+        };
+      }
     }
-  }
 
-  await db
-    .update(groups)
-    .set({ archivedAt: now(), updatedAt: now() })
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    await db
+      .update(groups)
+      .set({ archivedAt: now(), updatedAt: now() })
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
 
-  void sdk.activity.log({
-    action: 'group.closed',
-    targetType: 'group',
-    targetId: groupId,
-    summary: 'Closed the group',
+    void sdk.activity.log({
+      action: 'group.closed',
+      targetType: 'group',
+      targetId: groupId,
+      summary: 'Closed the group',
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Group closed.' };
   });
+}
 
-  revalidatePath('/tally/groups');
-  return { ok: true, message: 'Group closed.' };
+/** The undo for "Close group" — clears `archivedAt` so the group accepts
+ *  expenses again. Owner-only, like closing. */
+export async function reopenGroupAction(groupId: string): Promise<ActionResult> {
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
+
+    const [group] = await db
+      .select({ archivedAt: groups.archivedAt })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    if (!group) return { ok: false, error: 'Group not found.' };
+    if (!group.archivedAt) return { ok: true, message: 'Group is already open.' };
+
+    await db
+      .update(groups)
+      .set({ archivedAt: null, updatedAt: now() })
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+
+    void sdk.activity.log({
+      action: 'group.reopened',
+      targetType: 'group',
+      targetId: groupId,
+      summary: 'Reopened the group',
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Group reopened.' };
+  });
 }
 
 /**
@@ -554,46 +681,50 @@ export async function archiveGroupAction(groupId: string): Promise<ActionResult>
  * nothing exists yet that another member's math could depend on (SPEC.md
  * §7). Safe to cascade-delete `group_members` rows here specifically
  * because that history-free precondition rules out any `expense_payers`/
- * `expense_splits` row referencing one — the orphaning risk `removeMemberAction`'s
- * soft-remove protects against elsewhere in this plugin cannot occur here.
+ * `expense_splits`/`reminders` row referencing one. Both deletes run in one
+ * transaction so a failure can't leave an orphaned, member-less group.
  */
 export async function deleteGroupAction(groupId: string): Promise<ActionResult> {
-  const { db, userId, tenantId } = await getContext();
-  await requireGroupManage(db, tenantId, userId, groupId);
+  return runGuarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+    await requireGroupManage(db, tenantId, userId, groupId);
 
-  const [group] = await db
-    .select({ id: groups.id })
-    .from(groups)
-    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
-  if (!group) return { ok: true };
+    const [group] = await db
+      .select({ id: groups.id })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    if (!group) return { ok: true };
 
-  const [existingExpense] = await db
-    .select({ id: expenses.id })
-    .from(expenses)
-    .where(eq(expenses.groupId, groupId));
-  const [existingSettlement] = await db
-    .select({ id: settlements.id })
-    .from(settlements)
-    .where(eq(settlements.groupId, groupId));
-  if (existingExpense || existingSettlement) {
-    return {
-      ok: false,
-      error: 'This group has expense or settlement history and can only be closed, not deleted.',
-    };
-  }
+    const [existingExpense] = await db
+      .select({ id: expenses.id })
+      .from(expenses)
+      .where(eq(expenses.groupId, groupId));
+    const [existingSettlement] = await db
+      .select({ id: settlements.id })
+      .from(settlements)
+      .where(eq(settlements.groupId, groupId));
+    if (existingExpense || existingSettlement) {
+      return {
+        ok: false,
+        error: 'This group has expense or settlement history and can only be closed, not deleted.',
+      };
+    }
 
-  await db
-    .delete(groupMembers)
-    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.tenantId, tenantId)));
-  await db.delete(groups).where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(groupMembers)
+        .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.tenantId, tenantId)));
+      await tx.delete(groups).where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+    });
 
-  void sdk.activity.log({
-    action: 'group.deleted',
-    targetType: 'group',
-    targetId: groupId,
-    summary: 'Deleted an empty group',
+    void sdk.activity.log({
+      action: 'group.deleted',
+      targetType: 'group',
+      targetId: groupId,
+      summary: 'Deleted an empty group',
+    });
+
+    revalidateTallyViews();
+    return { ok: true, message: 'Group deleted.' };
   });
-
-  revalidatePath('/tally/groups');
-  return { ok: true, message: 'Group deleted.' };
 }

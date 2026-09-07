@@ -26,9 +26,17 @@ import type { Db } from './context';
 export interface MyMembership {
   groupId: string;
   myMemberId: string;
+  /** My own role in this group — lets Inbox/People gate owner-only rows
+   *  without re-scanning `membersByGroup`. */
+  myRole: string;
   name: string;
   defaultCurrency: string;
   archivedAt: number | null;
+  /** The group's "Simplify debts" setting (`balances.ts`'s
+   *  `counterpartiesForGroup`) — every cross-group view must honour it
+   *  per group, never assume one mode. */
+  simplifyDebts: boolean;
+  createdAt: number;
 }
 
 export type MemberRow = typeof groupMembers.$inferSelect;
@@ -41,6 +49,8 @@ export interface ExpenseRow {
   currency: string;
   category: string | null;
   occurredOn: number;
+  createdAt: number;
+  notes: string | null;
   deletedAt: number | null;
   receiptStorageKey: string | null;
 }
@@ -66,6 +76,7 @@ export interface SettlementRow {
   currency: string;
   note: string | null;
   settledOn: number;
+  createdAt: number;
   deletedAt: number | null;
 }
 
@@ -96,9 +107,12 @@ export async function fetchMyGroupsData(
     .select({
       groupId: groupMembers.groupId,
       myMemberId: groupMembers.id,
+      myRole: groupMembers.role,
       name: groups.name,
       defaultCurrency: groups.defaultCurrency,
       archivedAt: groups.archivedAt,
+      simplifyDebts: groups.simplifyDebts,
+      createdAt: groups.createdAt,
     })
     .from(groupMembers)
     .innerJoin(groups, eq(groups.id, groupMembers.groupId))
@@ -130,6 +144,8 @@ export async function fetchMyGroupsData(
       currency: expenses.currency,
       category: expenses.category,
       occurredOn: expenses.occurredOn,
+      createdAt: expenses.createdAt,
+      notes: expenses.notes,
       deletedAt: expenses.deletedAt,
       receiptStorageKey: expenses.receiptStorageKey,
     })
@@ -168,6 +184,7 @@ export async function fetchMyGroupsData(
         currency: settlements.currency,
         note: settlements.note,
         settledOn: settlements.settledOn,
+        createdAt: settlements.createdAt,
         deletedAt: settlements.deletedAt,
       })
       .from(settlements)

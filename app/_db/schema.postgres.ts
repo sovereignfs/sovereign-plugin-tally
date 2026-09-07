@@ -31,6 +31,7 @@ export const groups = pgTable('groups', {
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   archivedAt: bigint('archived_at', { mode: 'number' }),
+  simplifyDebts: integer('simplify_debts').notNull().default(0),
 });
 
 export const groupMembers = pgTable(

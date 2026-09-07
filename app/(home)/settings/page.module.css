@@ -6,5 +6,5 @@
 }
 
 .card {
-  max-width: 24rem;
+  max-width: calc(var(--sv-space-16) * 6);
 }

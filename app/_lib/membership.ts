@@ -1,7 +1,14 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import { expensePayers, expenseSplits, expenses, groupMembers, settlements } from '../_db/schema';
+import {
+  expensePayers,
+  expenseSplits,
+  expenses,
+  groupMembers,
+  groups,
+  settlements,
+} from '../_db/schema';
 import { computeNetBalances } from './balances';
-import type { Db } from './context';
+import type { ActionResult, Db } from './context';
 import { canManageGroup, isGroupMemberRole, type GroupMemberRole } from './group-rules';
 
 /**
@@ -21,6 +28,47 @@ export class GroupAccessError extends Error {
     super(message);
     this.name = 'GroupAccessError';
   }
+}
+
+export class GroupClosedError extends Error {
+  constructor(message = 'This group is closed. Reopen it from Group settings to make changes.') {
+    super(message);
+    this.name = 'GroupClosedError';
+  }
+}
+
+/**
+ * Runs a server action body, turning the two expected authorization
+ * failures into an `ActionResult` error the form can render instead of a
+ * thrown error that lands on Next's generic error boundary. Anything else
+ * still throws — an unexpected failure must not be dressed up as a
+ * validation message.
+ */
+export async function runGuarded(fn: () => Promise<ActionResult>): Promise<ActionResult> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof GroupAccessError || error instanceof GroupClosedError) {
+      return { ok: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Throws `GroupClosedError` if the group is closed (`archivedAt` set) or
+ * doesn't exist. Every ledger-mutating action (expenses, settlements,
+ * membership changes) calls this after its role check — a closed group is
+ * read-only until an owner reopens it (SPEC.md §7), otherwise it could
+ * drift back into a non-zero balance with the "Closed" badge still showing.
+ */
+export async function requireGroupOpen(db: Db, tenantId: string, groupId: string): Promise<void> {
+  const [group] = await db
+    .select({ archivedAt: groups.archivedAt })
+    .from(groups)
+    .where(and(eq(groups.id, groupId), eq(groups.tenantId, tenantId)));
+  if (!group) throw new GroupAccessError('Group not found.');
+  if (group.archivedAt) throw new GroupClosedError();
 }
 
 /** Resolves the current user's role via an active (not-left) `group_members` row. */
@@ -104,7 +152,11 @@ export async function hasOtherActiveOwner(
  * `computeNetBalances` only ever produces an entry for members present in
  * its input.
  */
-export async function hasNonZeroBalance(db: Db, groupId: string, memberId: string): Promise<boolean> {
+export async function hasNonZeroBalance(
+  db: Db,
+  groupId: string,
+  memberId: string,
+): Promise<boolean> {
   const [groupExpenses, memberPayers, memberSplits, groupSettlements] = await Promise.all([
     db
       .select({ id: expenses.id, currency: expenses.currency, deletedAt: expenses.deletedAt })

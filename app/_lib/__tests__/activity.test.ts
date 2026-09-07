@@ -1,13 +1,72 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeExpenseActivity,
+  describeMyPosition,
   describeSettlementActivity,
   formatActivityDate,
+  formatMoney,
   formatRelativeTime,
   groupActivityByMonth,
   monthLabelFor,
+  recentMonthKeys,
+  toDateInputValue,
   type GroupActivityItem,
 } from '../activity';
+
+describe('formatMoney', () => {
+  it('uses the ISO code, thousands separators, and two decimals for a cents currency', () => {
+    expect(formatMoney(240_000, 'USD')).toBe('USD 2,400.00');
+    expect(formatMoney(5200, 'EUR')).toBe('EUR 52.00');
+  });
+
+  it('drops the decimals for a zero-decimal currency', () => {
+    expect(formatMoney(150_000, 'JPY')).toBe('JPY 1,500');
+  });
+
+  it('falls back to a fixed two-decimal form for an unknown code', () => {
+    expect(formatMoney(1234, 'ZZZ')).toBe('ZZZ 12.34');
+  });
+});
+
+describe('describeMyPosition', () => {
+  it('says lent when the reader paid more than their share', () => {
+    expect(describeMyPosition({ positionCents: 3900, involved: true, currency: 'USD' })).toBe(
+      'You lent USD 39.00',
+    );
+  });
+
+  it('says borrowed when the reader owes part of it', () => {
+    expect(describeMyPosition({ positionCents: -1300, involved: true, currency: 'USD' })).toBe(
+      'You borrowed USD 13.00',
+    );
+  });
+
+  it('distinguishes paying exactly your share from not being involved', () => {
+    expect(describeMyPosition({ positionCents: 0, involved: true, currency: 'USD' })).toBe(
+      'You paid your share',
+    );
+    expect(describeMyPosition({ positionCents: 0, involved: false, currency: 'USD' })).toBe(
+      'Not involved',
+    );
+  });
+});
+
+describe('toDateInputValue / recentMonthKeys', () => {
+  it('renders a UTC epoch as YYYY-MM-DD and blank for null', () => {
+    expect(toDateInputValue(1787529600)).toBe('2026-08-24');
+    expect(toDateInputValue(null)).toBe('');
+  });
+
+  it('lists the last N month keys oldest first, crossing a year boundary', () => {
+    // 2026-02-10T00:00:00Z
+    expect(recentMonthKeys(Date.UTC(2026, 1, 10) / 1000, 4)).toEqual([
+      '2025-11',
+      '2025-12',
+      '2026-01',
+      '2026-02',
+    ]);
+  });
+});
 
 describe('describeExpenseActivity', () => {
   it('phrases the reader as "You" when they were the payer', () => {
@@ -109,6 +168,10 @@ describe('formatRelativeTime', () => {
   it('falls back to the absolute date at a week or beyond', () => {
     expect(formatRelativeTime(NOW - 10 * 24 * 60 * 60, NOW)).toBe('Aug 14');
   });
+
+  it('adds the year once the entry is from a previous calendar year', () => {
+    expect(formatRelativeTime(NOW - 400 * 24 * 60 * 60, NOW)).toBe('Jul 20, 2025');
+  });
 });
 
 describe('monthLabelFor', () => {
@@ -124,6 +187,7 @@ describe('groupActivityByMonth', () => {
       id,
       type: 'expense',
       occurredOn,
+      recordedAt: occurredOn,
       categoryLabel: 'General',
       description: 'test',
       note: null,

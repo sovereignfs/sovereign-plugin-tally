@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Icon, type IconName } from '@sovereignfs/ui';
 import type { ActionResult } from '../_lib/context';
-import styles from '../(home)/inbox/page.module.css';
+import styles from './InboxActionButton.module.css';
 
 interface InboxActionButtonProps {
   label: string;

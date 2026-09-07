@@ -1,7 +1,6 @@
 'use server';
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { revalidatePath } from 'next/cache';
 import { sdk } from '@sovereignfs/sdk';
 import {
   expensePayers,
@@ -13,24 +12,32 @@ import {
 } from '../_db/schema';
 import {
   describeExpenseActivity,
+  describeMyPosition,
   describeSettlementActivity,
   groupActivityByMonth,
+  monthLabelFor,
+  recentMonthKeys,
   type GroupActivityItem,
   type GroupActivityMonth,
 } from './activity';
 import {
+  aggregateByCategory,
+  aggregateByPeriod,
   computeNetBalances,
-  resolveCounterparties,
+  counterpartiesForGroup,
+  myPositionCents,
+  suggestedPaymentsForGroup,
   type CurrencyAmount,
   type NetBalance,
 } from './balances';
 import { CATEGORY_LABEL_BY_VALUE } from './categories';
 import { pushTo } from './collections';
 import type { ActionResult } from './context';
-import { getContext, now } from './context';
+import { getContext, now, revalidateTallyViews } from './context';
+import { isSupportedCurrency } from './currencies';
 import { fetchMyGroupsData } from './group-data';
 import { newId } from './ids';
-import { requireGroupMember } from './membership';
+import { hasOtherActiveOwner, requireGroupMember } from './membership';
 import { resolveReceiptUrls } from './receipts';
 
 export type { ActionResult };
@@ -51,21 +58,19 @@ export interface GroupListItem {
   memberCount: number;
   /** My own balance(s) in this group — empty means settled up. One entry
    *  per currency, sorted by |amount| descending (never blended — SPEC.md
-   *  §4; see `overview.ts`'s `OverviewGroupItem` for why this can't
-   *  collapse to a single dominant entry). */
+   *  §4). */
   myBalances: CurrencyAmount[];
   /** Other members with a non-zero balance relative to me, sorted by
-   *  |amount| descending — the per-group "who's not settled up" preview
-   *  (Splitwise's own Groups list shows the same thing per group tile). */
+   *  |amount| descending — the per-group "who's not settled up" preview,
+   *  in the group's own pairwise/simplified mode. */
   counterparties: GroupCounterpartyView[];
+  /** Most recent expense or settlement (by entry date), for sorting. */
+  lastActivityAt: number | null;
 }
 
 /**
- * Groups the current user is an active member of, each with their own
- * balance and a preview of which other members aren't settled up with
- * them (SPEC.md §9's group list). Same per-group `computeNetBalances` +
- * `resolveCounterparties` pipeline `overview.ts`'s `getOverviewData` uses,
- * just not rolled up across groups.
+ * Groups the current user is an active member of, sorted open-first, then
+ * by most recent activity, then by name — never raw database order.
  */
 export async function listGroupsForUser(): Promise<GroupListItem[]> {
   const { db, userId, tenantId } = await getContext();
@@ -85,30 +90,40 @@ export async function listGroupsForUser(): Promise<GroupListItem[]> {
     string,
     { memberId: string; currency: string; amountCents: number }[]
   >();
+  const lastActivityByGroup = new Map<string, number>();
   const realUserIds = new Set<string>();
 
   for (const membership of myMemberships) {
     const { groupId, myMemberId } = membership;
     const groupMembersList = membersByGroup.get(groupId) ?? [];
-
-    const netBalances = computeNetBalances({
+    const ledger = {
       expenses: expensesByGroup.get(groupId) ?? [],
       payers: payersByGroup.get(groupId) ?? [],
       splits: splitsByGroup.get(groupId) ?? [],
       settlements: settlementsByGroup.get(groupId) ?? [],
-    });
+    };
 
+    const netBalances = computeNetBalances(ledger);
     const myBalances = netBalances
       .filter((b) => b.memberId === myMemberId && b.amountCents !== 0)
       .map((b) => ({ currency: b.currency, amountCents: b.amountCents }))
       .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
     myBalancesByGroup.set(groupId, myBalances);
 
-    for (const counterparty of resolveCounterparties(netBalances, myMemberId)) {
+    const counterparties = counterpartiesForGroup(
+      { ...ledger, simplifyDebts: membership.simplifyDebts, netBalances },
+      myMemberId,
+    );
+    for (const counterparty of counterparties) {
       pushTo(rawCounterpartiesByGroup, groupId, counterparty);
       const member = groupMembersList.find((m) => m.id === counterparty.memberId);
       if (member?.kind === 'user' && member.userId) realUserIds.add(member.userId);
     }
+
+    let latest = 0;
+    for (const e of ledger.expenses) if (!e.deletedAt) latest = Math.max(latest, e.createdAt);
+    for (const s of ledger.settlements) if (!s.deletedAt) latest = Math.max(latest, s.createdAt);
+    if (latest > 0) lastActivityByGroup.set(groupId, latest);
   }
 
   const resolvedUsers =
@@ -123,7 +138,7 @@ export async function listGroupsForUser(): Promise<GroupListItem[]> {
     return member.guestName ?? 'Guest';
   }
 
-  return myMemberships.map((m) => ({
+  const items: GroupListItem[] = myMemberships.map((m) => ({
     id: m.groupId,
     name: m.name,
     defaultCurrency: m.defaultCurrency,
@@ -138,7 +153,20 @@ export async function listGroupsForUser(): Promise<GroupListItem[]> {
         amountCents: c.amountCents,
       }))
       .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents)),
+    lastActivityAt: lastActivityByGroup.get(m.groupId) ?? null,
   }));
+
+  const createdAtByGroup = new Map(myMemberships.map((m) => [m.groupId, m.createdAt]));
+  items.sort((a, b) => {
+    const aClosed = a.archivedAt !== null ? 1 : 0;
+    const bClosed = b.archivedAt !== null ? 1 : 0;
+    if (aClosed !== bClosed) return aClosed - bClosed;
+    const aActivity = a.lastActivityAt ?? createdAtByGroup.get(a.id) ?? 0;
+    const bActivity = b.lastActivityAt ?? createdAtByGroup.get(b.id) ?? 0;
+    if (aActivity !== bActivity) return bActivity - aActivity;
+    return a.name.localeCompare(b.name);
+  });
+  return items;
 }
 
 export interface GroupMemberView {
@@ -146,6 +174,29 @@ export interface GroupMemberView {
   label: string;
   role: 'owner' | 'member';
   kind: 'user' | 'guest';
+  /** Every currency this member has a non-zero balance in — never
+   *  collapsed to one (a multi-currency group is the normal case). */
+  balances: CurrencyAmount[];
+}
+
+export interface SuggestedPaymentView {
+  fromMemberId: string;
+  toMemberId: string;
+  amountCents: number;
+  currency: string;
+}
+
+export interface CategoryTotalView {
+  label: string;
+  currency: string;
+  amountCents: number;
+}
+
+export interface MonthTotalView {
+  monthKey: string;
+  label: string;
+  currency: string;
+  amountCents: number;
 }
 
 export interface GroupDetail {
@@ -153,35 +204,39 @@ export interface GroupDetail {
   name: string;
   description: string | null;
   defaultCurrency: string;
+  /** Epoch seconds, date-only semantics — null when unset (SPEC.md §3). */
+  startDate: number | null;
+  endDate: number | null;
+  /** The group's "Simplify debts" setting — labels the Settle up section. */
+  simplifyDebts: boolean;
   members: GroupMemberView[];
   balances: NetBalance[];
-  /** My own balance summary for this group, one entry per currency (see
-   *  `overview.ts`'s `OverviewGroupItem` for why this can't collapse to a
-   *  single dominant entry). */
+  /** My own balance summary for this group, one entry per currency. */
   myBalances: CurrencyAmount[];
-  /** Month-grouped, described, merged expense + settlement timeline
-   *  (UI-FLOW.md §4). */
+  /** My active membership row's id — the expense form's default payer. */
+  myMemberId: string | null;
+  /** Suggested payments under the group's own mode (`suggestedPaymentsForGroup`). */
+  suggestions: SuggestedPaymentView[];
+  /** Month-grouped, described, merged expense + settlement timeline (UI-FLOW.md §4). */
   activity: GroupActivityMonth[];
-  /** Null if the current user isn't an active `kind = 'user'` member (can't
-   *  happen given `requireGroupMember`'s guard above, but a guest-only
-   *  caller has no session to begin with). Gates owner-only detail-column
-   *  controls (Group settings) without a second query. */
+  /** This group's own spend, per category and per month (last 6), per currency. */
+  analytics: { byCategory: CategoryTotalView[]; byMonth: MonthTotalView[] };
   myRole: 'owner' | 'member' | null;
   /** Set by "Close group" (SPEC.md §7) — null while active. */
   archivedAt: number | null;
   /** True if the group has ever had an expense or settlement row, counting
    *  soft-deleted ones — SPEC.md §7's bright line between "Close" (any
-   *  history) and "Delete" (none, ever). Gates which of the two
-   *  detail-column lifecycle CTAs renders. */
+   *  history) and "Delete" (none, ever). */
   hasHistory: boolean;
+  hasOutstandingBalance: boolean;
+  /** Why "Leave group" is disabled for the current user, or null if allowed. */
+  leaveBlockedReason: string | null;
 }
 
 /**
- * Full detail for the `@detail/groups` slot: the group, its active
- * members (resolved to display names via `sdk.directory`), and real
- * balances (`app/_lib/balances.ts`, SPEC.md §4). Throws `GroupAccessError`
- * if the current user isn't an active member — same guard every
- * group-scoped read/write in this plugin uses.
+ * Full detail for the `@detail/groups` slot. Throws `GroupAccessError` if
+ * the current user isn't an active member — same guard every group-scoped
+ * read/write in this plugin uses.
  */
 export async function getGroupDetail(groupId: string): Promise<GroupDetail | null> {
   const { db, userId, tenantId } = await getContext();
@@ -212,17 +267,16 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     realUserIds.length > 0 ? await sdk.directory.resolveUsers({ ids: realUserIds }) : [];
   const nameByUserId = new Map(resolvedUsers.map((u) => [u.id, u.name ?? u.email]));
 
-  const memberViews: GroupMemberView[] = members.map((m) => ({
-    memberId: m.id,
-    label:
+  const labelByMemberId = new Map(
+    members.map((m) => [
+      m.id,
       m.kind === 'user'
         ? (nameByUserId.get(m.userId ?? '') ?? 'Unknown member')
         : (m.guestName ?? 'Guest'),
-    role: m.role === 'owner' ? 'owner' : 'member',
-    kind: m.kind === 'guest' ? 'guest' : 'user',
-  }));
-  const labelByMemberId = new Map(memberViews.map((m) => [m.memberId, m.label]));
-  const myMemberId = members.find((m) => m.kind === 'user' && m.userId === userId)?.id ?? null;
+    ]),
+  );
+  const myMembership = members.find((m) => m.kind === 'user' && m.userId === userId) ?? null;
+  const myMemberId = myMembership?.id ?? null;
 
   const groupExpenses = await db
     .select({
@@ -232,6 +286,9 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
       currency: expenses.currency,
       category: expenses.category,
       occurredOn: expenses.occurredOn,
+      createdAt: expenses.createdAt,
+      notes: expenses.notes,
+      splitMethod: expenses.splitMethod,
       deletedAt: expenses.deletedAt,
       receiptStorageKey: expenses.receiptStorageKey,
     })
@@ -257,6 +314,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
             expenseId: expenseSplits.expenseId,
             memberId: expenseSplits.memberId,
             shareAmountCents: expenseSplits.shareAmountCents,
+            shareUnits: expenseSplits.shareUnits,
           })
           .from(expenseSplits)
           .where(inArray(expenseSplits.expenseId, expenseIds))
@@ -270,6 +328,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
         currency: settlements.currency,
         note: settlements.note,
         settledOn: settlements.settledOn,
+        createdAt: settlements.createdAt,
         deletedAt: settlements.deletedAt,
       })
       .from(settlements)
@@ -277,46 +336,99 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
   ]);
   const activeSettlements = groupSettlements.filter((s) => !s.deletedAt);
 
-  const balances = computeNetBalances({
+  const ledger = {
     expenses: groupExpenses,
     payers: groupPayers,
     splits: groupSplits,
     settlements: groupSettlements,
-  });
-  const myBalances: CurrencyAmount[] = myMemberId
-    ? balances
-        .filter((b) => b.memberId === myMemberId && b.amountCents !== 0)
-        .map((b) => ({ currency: b.currency, amountCents: b.amountCents }))
-        .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents))
-    : [];
+  };
+  const balances = computeNetBalances(ledger);
+  const balancesByMember = new Map<string, CurrencyAmount[]>();
+  for (const b of balances) {
+    if (b.amountCents === 0) continue;
+    pushTo(balancesByMember, b.memberId, { currency: b.currency, amountCents: b.amountCents });
+  }
+  for (const list of balancesByMember.values()) {
+    list.sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+  }
 
-  // Single payer per expense in v1 (SPEC.md §3) — the first payer row is
-  // always the only one.
-  const payerMemberIdByExpenseId = new Map(groupPayers.map((p) => [p.expenseId, p.memberId]));
+  const memberViews: GroupMemberView[] = members.map((m) => ({
+    memberId: m.id,
+    label: labelByMemberId.get(m.id) ?? 'Unknown member',
+    role: m.role === 'owner' ? 'owner' : 'member',
+    kind: m.kind === 'guest' ? 'guest' : 'user',
+    balances: balancesByMember.get(m.id) ?? [],
+  }));
+  const myBalances = myMemberId ? (balancesByMember.get(myMemberId) ?? []) : [];
+
+  const suggestions = suggestedPaymentsForGroup({
+    ...ledger,
+    simplifyDebts: group.simplifyDebts,
+    netBalances: balances,
+  });
+
+  const payersByExpenseId = new Map<string, { memberId: string; amountCents: number }[]>();
+  for (const p of groupPayers) pushTo(payersByExpenseId, p.expenseId, p);
+  const splitsByExpenseId = new Map<
+    string,
+    { memberId: string; shareAmountCents: number; shareUnits: number | null }[]
+  >();
+  for (const s of groupSplits) pushTo(splitsByExpenseId, s.expenseId, s);
 
   const receiptUrlByExpenseId = await resolveReceiptUrls(
     activeExpenses.map((e) => ({ id: e.id, receiptStorageKey: e.receiptStorageKey })),
   );
 
   const expenseActivity: GroupActivityItem[] = activeExpenses.map((e) => {
-    const payerMemberId = payerMemberIdByExpenseId.get(e.id) ?? null;
-    const payerLabel = (payerMemberId && labelByMemberId.get(payerMemberId)) ?? 'Someone';
+    const payers = payersByExpenseId.get(e.id) ?? [];
+    const splits = splitsByExpenseId.get(e.id) ?? [];
+    const myPaid = payers
+      .filter((p) => p.memberId === myMemberId)
+      .reduce((sum, p) => sum + p.amountCents, 0);
+    const mySplit = splits.find((s) => s.memberId === myMemberId);
+    const involved = myPaid > 0 || mySplit !== undefined;
     return {
       id: e.id,
       type: 'expense',
       occurredOn: e.occurredOn,
+      recordedAt: e.createdAt,
       categoryLabel: (e.category && CATEGORY_LABEL_BY_VALUE.get(e.category)) ?? 'General',
       description: describeExpenseActivity({
-        payerLabel,
-        isPayerMe: payerMemberId === myMemberId,
+        payerLabel: describePayers(payers, labelByMemberId, myMemberId),
+        isPayerMe: payers.length === 1 && payers[0]?.memberId === myMemberId,
         amountCents: e.amountCents,
         currency: e.currency,
         description: e.description,
       }),
+      myPosition: describeMyPosition({
+        positionCents: myPositionCents(myPaid, mySplit?.shareAmountCents ?? 0),
+        involved,
+        currency: e.currency,
+      }),
       note: null,
+      notes: e.notes,
       amountCents: e.amountCents,
       currency: e.currency,
       receiptUrl: receiptUrlByExpenseId.get(e.id) ?? null,
+      groupId,
+      expense: {
+        expenseId: e.id,
+        groupId,
+        description: e.description,
+        amountCents: e.amountCents,
+        currency: e.currency,
+        category: e.category,
+        occurredOn: e.occurredOn,
+        notes: e.notes,
+        splitMethod: e.splitMethod,
+        payers: payers.map((p) => ({ memberId: p.memberId, amountCents: p.amountCents })),
+        participants: splits.map((s) => ({
+          memberId: s.memberId,
+          shareAmountCents: s.shareAmountCents,
+          shareUnits: s.shareUnits,
+        })),
+        hasReceipt: e.receiptStorageKey !== null,
+      },
     };
   });
 
@@ -324,6 +436,7 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     id: s.id,
     type: 'settlement',
     occurredOn: s.settledOn,
+    recordedAt: s.createdAt,
     categoryLabel: 'Settlement',
     description: describeSettlementActivity({
       fromLabel: labelByMemberId.get(s.fromMemberId) ?? 'Someone',
@@ -336,40 +449,124 @@ export async function getGroupDetail(groupId: string): Promise<GroupDetail | nul
     note: s.note,
     amountCents: s.amountCents,
     currency: s.currency,
+    groupId,
   }));
 
   const activity = groupActivityByMonth(
-    [...expenseActivity, ...settlementActivity].sort((a, b) => b.occurredOn - a.occurredOn),
+    [...expenseActivity, ...settlementActivity].sort(
+      (a, b) => b.occurredOn - a.occurredOn || b.recordedAt - a.recordedAt,
+    ),
   );
 
-  const myRole = myMemberId
-    ? (memberViews.find((m) => m.memberId === myMemberId)?.role ?? null)
+  // Group-level analytics: the whole group's spend (expense totals), not
+  // the reader's share — Overview owns the personal "my share" view.
+  const nowTs = now();
+  const monthKeys = recentMonthKeys(nowTs, 6);
+  const monthWindowStart =
+    Date.UTC(Number(monthKeys[0]?.slice(0, 4)), Number(monthKeys[0]?.slice(5, 7)) - 1, 1) / 1000;
+  const byCategory = aggregateByCategory(
+    activeExpenses.map((e) => ({
+      category: e.category,
+      currency: e.currency,
+      shareAmountCents: e.amountCents,
+    })),
+  )
+    .map((t) => ({
+      label: (t.category && CATEGORY_LABEL_BY_VALUE.get(t.category)) ?? 'General',
+      currency: t.currency,
+      amountCents: t.amountCents,
+    }))
+    .sort((a, b) => b.amountCents - a.amountCents);
+  const byPeriod = aggregateByPeriod(
+    activeExpenses
+      .filter((e) => e.occurredOn >= monthWindowStart)
+      .map((e) => ({
+        occurredOn: e.occurredOn,
+        currency: e.currency,
+        shareAmountCents: e.amountCents,
+      })),
+    'month',
+  );
+  const currenciesInWindow = Array.from(new Set(byPeriod.map((p) => p.currency)));
+  const byMonth: MonthTotalView[] = currenciesInWindow.flatMap((currency) =>
+    monthKeys.map((monthKey) => ({
+      monthKey,
+      label: monthLabelFor(monthKey),
+      currency,
+      amountCents:
+        byPeriod.find((p) => p.periodKey === monthKey && p.currency === currency)?.amountCents ?? 0,
+    })),
+  );
+
+  const myRole: GroupDetail['myRole'] = myMembership
+    ? myMembership.role === 'owner'
+      ? 'owner'
+      : 'member'
     : null;
+  const hasOutstandingBalance = balances.some((b) => b.amountCents !== 0);
+
+  let leaveBlockedReason: string | null = null;
+  if (!myMemberId) {
+    leaveBlockedReason = 'You are not a member of this group.';
+  } else if (myBalances.length > 0) {
+    leaveBlockedReason = 'Settle up your balance before leaving this group.';
+  } else if (
+    myRole === 'owner' &&
+    !(await hasOtherActiveOwner(db, tenantId, groupId, myMemberId))
+  ) {
+    leaveBlockedReason = 'Make someone else an owner before leaving.';
+  }
 
   return {
     id: group.id,
     name: group.name,
     description: group.description,
     defaultCurrency: group.defaultCurrency,
+    startDate: group.startDate,
+    endDate: group.endDate,
+    simplifyDebts: group.simplifyDebts,
     members: memberViews,
     balances,
     myBalances,
+    myMemberId,
+    suggestions,
     activity,
+    analytics: { byCategory, byMonth },
     myRole,
     archivedAt: group.archivedAt,
     // groupExpenses/groupSettlements are unfiltered by deletedAt — a
     // soft-deleted row is still real history a "Delete" must never discard.
     hasHistory: groupExpenses.length > 0 || groupSettlements.length > 0,
+    hasOutstandingBalance,
+    leaveBlockedReason,
   };
 }
 
-const CURRENCY_CODE_RE = /^[A-Z]{3}$/;
+/** "Alex", "You and Alex", "Alex and 2 others" — the payer phrase for a
+ *  single- or multi-payer expense. */
+function describePayers(
+  payers: { memberId: string }[],
+  labelByMemberId: Map<string, string>,
+  myMemberId: string | null,
+): string {
+  const labels = payers.map((p) =>
+    p.memberId === myMemberId ? 'You' : (labelByMemberId.get(p.memberId) ?? 'Someone'),
+  );
+  if (labels.length === 0) return 'Someone';
+  if (labels.length === 1) return labels[0] ?? 'Someone';
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels[0]} and ${labels.length - 1} others`;
+}
 
-/** Creator becomes the sole `owner` member row (SPEC.md §6). */
+export type CreateGroupResult =
+  { ok: true; message: string; groupId: string } | { ok: false; error: string };
+
+/** Creator becomes the sole `owner` member row (SPEC.md §6) — both rows in
+ *  one transaction, so a group can never exist without an owner. */
 export async function createGroupAction(
-  _prevState: ActionResult | null,
+  _prevState: CreateGroupResult | null,
   formData: FormData,
-): Promise<ActionResult> {
+): Promise<CreateGroupResult> {
   const { db, userId, tenantId } = await getContext();
 
   const name = String(formData.get('name') ?? '').trim();
@@ -377,32 +574,36 @@ export async function createGroupAction(
     .trim()
     .toUpperCase();
   const descriptionInput = String(formData.get('description') ?? '').trim();
+  const simplifyDebts = String(formData.get('simplifyDebts') ?? '') === 'on';
 
   if (!name) return { ok: false, error: 'Enter a group name.' };
-  if (!CURRENCY_CODE_RE.test(defaultCurrency)) return { ok: false, error: 'Choose a currency.' };
+  if (name.length > 100) return { ok: false, error: 'Keep the group name under 100 characters.' };
+  if (!isSupportedCurrency(defaultCurrency)) return { ok: false, error: 'Choose a currency.' };
 
   const groupId = newId();
   const timestamp = now();
 
-  await db.insert(groups).values({
-    id: groupId,
-    tenantId,
-    name,
-    description: descriptionInput || null,
-    defaultCurrency,
-    createdByUserId: userId,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-
-  await db.insert(groupMembers).values({
-    id: newId(),
-    groupId,
-    tenantId,
-    kind: 'user',
-    userId,
-    role: 'owner',
-    joinedAt: timestamp,
+  await db.transaction(async (tx) => {
+    await tx.insert(groups).values({
+      id: groupId,
+      tenantId,
+      name,
+      description: descriptionInput || null,
+      defaultCurrency,
+      simplifyDebts,
+      createdByUserId: userId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await tx.insert(groupMembers).values({
+      id: newId(),
+      groupId,
+      tenantId,
+      kind: 'user',
+      userId,
+      role: 'owner',
+      joinedAt: timestamp,
+    });
   });
 
   void sdk.activity.log({
@@ -412,6 +613,6 @@ export async function createGroupAction(
     summary: `Created "${name}"`,
   });
 
-  revalidatePath('/tally/groups');
-  return { ok: true, message: `Created "${name}".` };
+  revalidateTallyViews();
+  return { ok: true, message: `Created "${name}".`, groupId };
 }

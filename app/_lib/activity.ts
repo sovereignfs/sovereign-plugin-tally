@@ -38,16 +38,46 @@ const MONTH_ABBR = [
   'Dec',
 ] as const;
 
+const moneyFormatters = new Map<string, Intl.NumberFormat | null>();
+
+/**
+ * "USD 2,400.00" / "JPY 1,500" / "BHD 12.340" — `Intl.NumberFormat` with the
+ * ISO code (never a symbol: `$` alone is ambiguous across a dozen dollar
+ * currencies), thousands separators, and the currency's own minor-unit
+ * count. Amounts are always stored as ×100 minor units (`CurrencyInput`'s
+ * contract), so `amountCents / 100` is the display value for every
+ * currency, including zero-decimal ones. Intl's non-breaking space is
+ * normalised to a plain space so string comparisons and wrapping behave.
+ * Falls back to the old fixed-two-decimals form for a code Intl rejects.
+ */
 export function formatMoney(amountCents: number, currency: string): string {
-  return `${currency} ${(amountCents / 100).toFixed(2)}`;
+  let formatter = moneyFormatters.get(currency);
+  if (formatter === undefined) {
+    try {
+      formatter = new Intl.NumberFormat('en', {
+        style: 'currency',
+        currency,
+        currencyDisplay: 'code',
+      });
+    } catch {
+      formatter = null;
+    }
+    moneyFormatters.set(currency, formatter);
+  }
+  if (!formatter) return `${currency} ${(amountCents / 100).toFixed(2)}`;
+  return formatter.format(amountCents / 100).replace(/\u00a0/g, ' ');
 }
 
 /** "Aug 24" — UTC calendar day, matching this codebase's established
  *  "format dates in UTC server-side, never the server process's local
  *  timezone" convention (see `overview.ts`'s `startOfMonth`). */
-export function formatActivityDate(occurredOnSeconds: number): string {
+export function formatActivityDate(
+  occurredOnSeconds: number,
+  options: { withYear?: boolean } = {},
+): string {
   const date = new Date(occurredOnSeconds * 1000);
-  return `${MONTH_ABBR[date.getUTCMonth()]} ${date.getUTCDate()}`;
+  const base = `${MONTH_ABBR[date.getUTCMonth()]} ${date.getUTCDate()}`;
+  return options.withYear ? `${base}, ${date.getUTCFullYear()}` : base;
 }
 
 /**
@@ -69,7 +99,12 @@ export function formatRelativeTime(occurredOnSeconds: number, nowSeconds: number
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays === 1) return 'yesterday';
   if (diffDays < 7) return `${diffDays}d ago`;
-  return formatActivityDate(occurredOnSeconds);
+  // A flat feed has no month header to carry the year, so an entry from a
+  // previous calendar year says so explicitly rather than reading as recent.
+  const sameYear =
+    new Date(occurredOnSeconds * 1000).getUTCFullYear() ===
+    new Date(nowSeconds * 1000).getUTCFullYear();
+  return formatActivityDate(occurredOnSeconds, { withYear: !sameYear });
 }
 
 /** "August 2026" from a `toPeriodKey(..., 'month')`-shaped 'YYYY-MM' key. */
@@ -119,10 +154,42 @@ export function describeSettlementActivity(input: {
   return `${from} paid ${to} ${formatMoney(input.amountCents, input.currency)}`;
 }
 
+/**
+ * "You lent USD 39.00" / "You borrowed USD 13.00" / "You paid your share" /
+ * "Not involved" — the reader's own position on one expense, from
+ * `balances.ts`'s `myPositionCents`. `involved` is false when the reader
+ * neither paid nor had a share, distinguishing that from "lent exactly zero"
+ * (paid their own share and nothing more).
+ */
+export function describeMyPosition(input: {
+  positionCents: number;
+  involved: boolean;
+  currency: string;
+}): string {
+  if (!input.involved) return 'Not involved';
+  if (input.positionCents > 0)
+    return `You lent ${formatMoney(input.positionCents, input.currency)}`;
+  if (input.positionCents < 0) {
+    return `You borrowed ${formatMoney(-input.positionCents, input.currency)}`;
+  }
+  return 'You paid your share';
+}
+
 export interface GroupActivityItem {
   id: string;
   type: 'expense' | 'settlement';
   occurredOn: number;
+  /** When the row was recorded (`createdAt`) — distinct from `occurredOn`,
+   *  the user-entered date. Inbox sorts and "2h ago"s by this, since a
+   *  backdated expense added today is still news today. */
+  recordedAt: number;
+  /** The reader's own position on an expense (`describeMyPosition`) —
+   *  unset for a settlement row, whose description already names the
+   *  reader when they're a party. */
+  myPosition?: string;
+  /** The expense's `notes` field — shown under the description. Unset for
+   *  a settlement (whose optional `note` uses the sibling `note` field). */
+  notes?: string | null;
   /** The expense's real category label, or `'Settlement'` for a
    *  settlement row — one uniform "what kind of activity" slot rather
    *  than a special case in the UI for settlements having no category. */
@@ -144,6 +211,55 @@ export interface GroupActivityItem {
    *  never cached. `null`/unset for a settlement row or an expense with no
    *  receipt attached. */
   receiptUrl?: string | null;
+  /** Present only on the group detail's own feed, for the row's Edit
+   *  action (`ExpenseEditData`). Absent on cross-group feeds. */
+  expense?: ExpenseEditData;
+  /** The group this row belongs to — set alongside `expense`/settlement
+   *  rows on the group detail feed so row actions (delete) know their
+   *  scope without a second lookup. */
+  groupId?: string;
+}
+
+/**
+ * Everything the edit form needs to re-open an expense exactly as it was
+ * entered — carried on the group detail's own activity rows so "Edit"
+ * needs no second round trip. `shareUnits` is the original percentage /
+ * share-count input (SPEC.md §3), never the resolved cents.
+ */
+export interface ExpenseEditData {
+  expenseId: string;
+  groupId: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  category: string | null;
+  /** Epoch seconds, UTC midnight — `YYYY-MM-DD` via `toDateInputValue`. */
+  occurredOn: number;
+  notes: string | null;
+  splitMethod: string;
+  payers: { memberId: string; amountCents: number }[];
+  participants: { memberId: string; shareAmountCents: number; shareUnits: number | null }[];
+  hasReceipt: boolean;
+}
+
+/** Epoch seconds → the `YYYY-MM-DD` a `<input type="date">` wants, UTC
+ *  calendar (the inverse of `expense-input.ts`'s `parseDateInput`). */
+export function toDateInputValue(seconds: number | null): string {
+  if (seconds === null) return '';
+  return new Date(seconds * 1000).toISOString().slice(0, 10);
+}
+
+/** The `count` most recent 'YYYY-MM' keys ending at `nowSeconds`'s month,
+ *  oldest first — the x-axis for a monthly trend that must show empty
+ *  months as zero rather than skipping them. */
+export function recentMonthKeys(nowSeconds: number, count: number): string[] {
+  const date = new Date(nowSeconds * 1000);
+  const keys: string[] = [];
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - offset, 1));
+    keys.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
 }
 
 export interface GroupActivityMonth {

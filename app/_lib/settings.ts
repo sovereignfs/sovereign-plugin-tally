@@ -6,11 +6,9 @@ import { sdk } from '@sovereignfs/sdk';
 import { userSettings } from '../_db/schema';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
-import { CURRENCY_OPTIONS, DEFAULT_CURRENCY } from './currencies';
+import { DEFAULT_CURRENCY, isSupportedCurrency } from './currencies';
 
 export type { ActionResult };
-
-const VALID_CURRENCIES = new Set<string>(CURRENCY_OPTIONS.map((c) => c.code));
 
 export interface UserSettingsView {
   primaryCurrency: string;
@@ -50,7 +48,7 @@ export async function updateUserSettingsAction(
   const primaryCurrency = String(formData.get('primaryCurrency') ?? '')
     .trim()
     .toUpperCase();
-  if (!VALID_CURRENCIES.has(primaryCurrency)) return { ok: false, error: 'Choose a currency.' };
+  if (!isSupportedCurrency(primaryCurrency)) return { ok: false, error: 'Choose a currency.' };
 
   await db
     .insert(userSettings)
