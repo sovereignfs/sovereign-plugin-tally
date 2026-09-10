@@ -37,19 +37,12 @@
   "roles": {
     "group-owner": {
       "description": "Full control of a group.",
-      "capabilities": [
-        "group-view",
-        "group-add-expense",
-        "group-manage"
-      ],
+      "capabilities": ["group-view", "group-add-expense", "group-manage"],
       "scope": "resource"
     },
     "group-member": {
       "description": "Regular group participant.",
-      "capabilities": [
-        "group-view",
-        "group-add-expense"
-      ],
+      "capabilities": ["group-view", "group-add-expense"],
       "scope": "resource"
     }
   },
